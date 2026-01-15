@@ -36,8 +36,8 @@ from track_state import initial_state
 # Configuration
 # ----------------------------
 
-SURFACE_TYPE = "strip"
-KLEIN_SIGNATURE = "I V R H I V R I"
+SURFACE_TYPE = "annulus"
+KLEIN_SIGNATURE = "I V R I"
 
 MAX_STEPS: Optional[int] = None
 MAX_NODES: int = 20000
@@ -76,6 +76,8 @@ MARKDOWN_LOG_PATH: Optional[str] = None
 # - If True: always label singleton-complete as SIMPLE in output.
 # - If False: only label it SIMPLE when its dx has no weight terms (coeffs empty).
 RETCON_SINGLETON_AS_SIMPLE_ALWAYS: bool = True
+
+OUTPUT_DIR = "solutions by Klein signature"
 
 
 # ----------------------------
@@ -642,10 +644,17 @@ def main() -> None:
         if path is None:
             ts = time.strftime("%Y%m%d_%H%M%S")
             sig_token = _sanitize_for_filename(KLEIN_SIGNATURE)
-            path = f"weighted_prefix_pruning_{SURFACE_TYPE}_{sig_token}_{ts}.md"
+
+            # Ensure output directory exists
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+            filename = f"results_{SURFACE_TYPE}_{sig_token}_{ts}.md"
+            path = os.path.join(OUTPUT_DIR, filename)
+
         body_path = path + ".body.tmp"
         md_logger = MarkdownLogger(final_path=path, body_path=body_path)
         md_logger.start(surface=SURFACE_TYPE, signature=KLEIN_SIGNATURE, N=N)
+
 
     if SURFACE_TYPE not in ("annulus", "strip"):
         raise ValueError("SURFACE_TYPE must be 'annulus' or 'strip'")
