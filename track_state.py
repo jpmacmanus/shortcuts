@@ -1,333 +1,571 @@
-# track_state.py
 """
-Core state representation and "one step" transition plumbing for track schematics.
+track_state.py
 
-This file encodes the state transitions used by the shortcut search:
-
-- A track schematic is built by adding chords in squares.
-- Multiple disjoint segments per square are supported.
-- Marked boundary edges (TOP/BOTTOM) can be used multiple times via slots.
-- Unmarked boundary edges are forbidden.
-- Vertical edges are counted for lambda; we provide a standard "use at most once"
-  mechanism via a bitmask.
-
-IMPORTANT (OR slot reversal):
-
-Marked edges can have multiple ports ("slots"), ordered left-to-right on TOP edges
-(and right-to-left on BOTTOM edges in the cyclic-order convention in chord_diagram).
-
-For an orientation-reversing (OR) marked identification, the gluing reverses this
-left-to-right order. Under the monotone slot-creation convention in this project
-(exiting a marked edge always creates the next new slot on that edge), the correct
-transport rule is:
-
-- OP pair: new slot k on edge e corresponds to new slot k on the paired edge e'.
-- OR pair: new slot k on edge e corresponds to a *new leftmost* slot on the paired
-  edge e'. Equivalently: we must PREPEND a slot to e' (shifting existing slot indices
-  on e' up by 1), and land on slot 1.
-
-This file implements that behaviour by shifting chord endpoints in the destination
-square whenever an OR gluing creates a new slot.
-
-Run directly to see a small demo.
-    python track_state.py
+TrackState: core state container for BFS over patterns.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+import copy
+from typing import Dict, List, Optional, Tuple, Union
 
-from annulus import BoundaryEdge, MarkedAnnulus, Side
-from chord_diagram import BoundaryPoint, PortKind, SquareChordSet
-
-
-def vertical_edge_id(ann: MarkedAnnulus, square_i: int, exit_kind: PortKind) -> int:
-    """Delegate vertical-edge indexing to the surface (annulus vs strip)."""
-    if exit_kind == PortKind.RIGHT:
-        return ann.vertical_edge_id(square_i, go_right=True)
-    if exit_kind == PortKind.LEFT:
-        return ann.vertical_edge_id(square_i, go_right=False)
-    raise ValueError("exit_kind must be LEFT or RIGHT")
+from chord_diagram import ChordDiagram
+from chords import BoundaryPoint, Chord
+from edge import Port
+from marked_strips import BoundaryEdge, EdgeRef, MarkedAnnulus, MarkedStrip
+from square import Side
 
 
-def boundary_edge_for(square_i: int, kind: PortKind) -> BoundaryEdge:
-    if kind == PortKind.TOP:
-        return BoundaryEdge(Side.TOP, square_i)
-    if kind == PortKind.BOTTOM:
-        return BoundaryEdge(Side.BOTTOM, square_i)
-    raise ValueError("kind must be TOP or BOTTOM")
-
-
-def _shift_square_boundary_slots(sq: SquareChordSet, kind: PortKind, delta: int) -> SquareChordSet:
-    """Shift slot indices on TOP/BOTTOM endpoints in a SquareChordSet by +delta."""
-    if kind not in (PortKind.TOP, PortKind.BOTTOM):
-        raise ValueError("Can only shift TOP/BOTTOM slots")
-    if delta == 0:
-        return sq
-
-    new_chords = set()
-    for a, b in sq.chords:
-        if a.kind == kind:
-            a = BoundaryPoint(a.kind, a.slot + delta)
-        if b.kind == kind:
-            b = BoundaryPoint(b.kind, b.slot + delta)
-        new_chords.add((a, b))
-
-    top_slots = sq.top_slots
-    bottom_slots = sq.bottom_slots
-    if kind == PortKind.TOP:
-        top_slots += delta
-    else:
-        bottom_slots += delta
-
-    return SquareChordSet(chords=frozenset(new_chords), top_slots=top_slots, bottom_slots=bottom_slots)
-
-
-@dataclass(frozen=True)
-class Position:
-    """A specific boundary point on a specific square."""
-    square: int
-    point: BoundaryPoint
-
-    def __str__(self) -> str:
-        return f"Q{self.square}:{self.point}"
+MarkedSurface = Union[MarkedStrip, MarkedAnnulus]
+Cursor = Tuple[int, BoundaryPoint]  # (square index, boundary point)
 
 
 @dataclass(frozen=True)
 class TrackState:
-    """Immutable global state of a partially-built track schematic component."""
-    pos: Position
-    lam: int
-    used_vertical: int  # bitmask over N vertical edges
-    # Slot counts for TOP/BOTTOM boundary edges; LEFT/RIGHT are always slot 1 if used.
-    slot_counts: Tuple[Tuple[BoundaryEdge, int], ...]
-    # Per-square chord sets, as an immutable mapping (square index -> SquareChordSet)
-    squares: Tuple[Tuple[int, SquareChordSet], ...]
-
-    def slot_count(self, e: BoundaryEdge) -> int:
-        return dict(self.slot_counts).get(e, 0)
-
-    def square_chords(self, i: int) -> SquareChordSet:
-        return dict(self.squares).get(i, SquareChordSet(top_slots=0, bottom_slots=0))
-
-    def __str__(self) -> str:
-        sc = dict(self.squares)
-        parts = [
-            f"TrackState(pos={self.pos}, lam={self.lam}, used_vertical=0b{self.used_vertical:b})",
-            f"  slot_counts={dict(self.slot_counts)}",
-            f"  squares_with_chords={sorted(sc.keys())}",
-        ]
-        return "\n".join(parts)
-
-
-def _update_square_mapping(
-    squares: Tuple[Tuple[int, SquareChordSet], ...],
-    i: int,
-    new_val: SquareChordSet,
-) -> Tuple[Tuple[int, SquareChordSet], ...]:
-    d = dict(squares)
-    d[i] = new_val
-    return tuple(sorted(d.items()))
-
-
-def _update_slot_counts(
-    slot_counts: Tuple[Tuple[BoundaryEdge, int], ...],
-    e: BoundaryEdge,
-    new_count: int,
-) -> Tuple[Tuple[BoundaryEdge, int], ...]:
-    d = dict(slot_counts)
-    d[e] = new_count
-    return tuple(sorted(d.items()))
-
-
-def glue_across(ann: MarkedAnnulus, square_i: int, exit_point: BoundaryPoint) -> Position:
     """
-    Glue across the side that exit_point lies on.
+    Immutable state for BFS.
 
-    NOTE: For TOP/BOTTOM, this preserves slot index. The OR slot-reversal correction
-    is handled in step(); glue_across is retained for backward compatibility.
+    - surface: marked strip/annulus with N squares
+    - diagrams: chord diagram for each square (not necessarily a pattern)
+    - cursor: current square index and boundary point
+    - dy: integer displacement (can be negative)
+    - dx: integer vector length N+1
+    - lam: integer vector length N+1
+    - dominant_x_dir: +1 (RIGHT) or -1 (LEFT)
+    - dy_modifier: +1 or -1
+    - or_pair_count: non-negative integer
+    - turn_count: non-negative integer
+    - last_hor_edge_top: last horizontal edge on TOP (True), BOTTOM (False), or None
+    - last_vert_edge_left: last vertical edge on LEFT (True), RIGHT (False), or None
+    - last_moved_dir: -1, 0, or 1 (0 means no horizontal move yet)
     """
-    k = exit_point.kind
 
-    if k == PortKind.RIGHT:
-        j = ann.next_square_horizontal(square_i, go_right=True)
-        return Position(j, BoundaryPoint(PortKind.LEFT, 1))
-    if k == PortKind.LEFT:
-        j = ann.next_square_horizontal(square_i, go_right=False)
-        return Position(j, BoundaryPoint(PortKind.RIGHT, 1))
+    surface: MarkedSurface
+    diagrams: Dict[int, ChordDiagram]
+    cursor: Cursor
+    dy: int
+    dx: Tuple[int, ...]
+    lam: Tuple[int, ...]
+    dominant_x_dir: int
+    dy_modifier: int
+    or_pair_count: int
+    turn_count: int
+    last_hor_edge_top: Optional[bool]
+    last_vert_edge_left: Optional[bool]
+    last_moved_dir: int
 
-    if k in (PortKind.TOP, PortKind.BOTTOM):
-        e = boundary_edge_for(square_i, k)
-        if not ann.is_marked(e):
-            raise ValueError(f"Unmarked boundary edge used: {e}")
-        e2, _rev = ann.pair_info(e)
-        kind2 = PortKind.TOP if e2.side == Side.TOP else PortKind.BOTTOM
-        return Position(e2.i, BoundaryPoint(kind2, exit_point.slot))
+    def __post_init__(self) -> None:
+        n = self.surface.N
+        if len(self.dx) != n + 1:
+            raise ValueError("dx must have length N+1")
+        if len(self.lam) != n + 1:
+            raise ValueError("lam must have length N+1")
+        if self.dominant_x_dir not in (-1, 1):
+            raise ValueError("dominant_x_dir must be +1 or -1")
+        if self.dy_modifier not in (-1, 1):
+            raise ValueError("dy_modifier must be +1 or -1")
+        if self.or_pair_count < 0:
+            raise ValueError("or_pair_count must be non-negative")
+        if self.turn_count < 0:
+            raise ValueError("turn_count must be non-negative")
+        if self.cursor[0] < 0 or self.cursor[0] >= n:
+            raise ValueError("cursor square index out of range")
 
-    raise ValueError(f"Unsupported exit kind: {k}")
+    def is_closed(self) -> bool:
+        """
+        Return True if the cursor's boundary point is used by a chord in that square.
+        """
+        square_i, bp = self.cursor
+        diagram = self.diagrams.get(square_i)
+        if diagram is None:
+            return False
+        for ch in diagram.chords:
+            if ch.a == bp or ch.b == bp:
+                return True
+        return False
 
+    def dx_linear_form(self, *, var_prefix: str = "x", pretty: bool = False) -> str:
+        """
+        Return dx[0] + dx[1]*x1 + ... as a readable linear expression.
+        """
+        if not self.dx:
+            return "0"
+        parts: List[str] = []
+        const = self.dx[0]
+        if const != 0:
+            parts.append(str(const))
+        for i, coef in enumerate(self.dx[1:], start=1):
+            if coef == 0:
+                continue
+            sign = "+" if coef > 0 else "-"
+            mag = abs(coef)
+            if pretty:
+                term = f"{var_prefix}_{i}"
+                if mag != 1:
+                    term = f"{mag}{term}"
+            else:
+                term = f"{mag}*{var_prefix}{i}" if mag != 1 else f"{var_prefix}{i}"
+            if not parts:
+                parts.append(f"-{term}" if coef < 0 else term)
+            else:
+                parts.append(f"{sign} {term}")
+        return " ".join(parts) if parts else "0"
 
-def step(
-    ann: MarkedAnnulus,
-    st: TrackState,
-    exit_kind: PortKind,
-) -> TrackState:
-    """
-    Perform one step by creating a chord inside the current square from st.pos.point
-    to an exit point on side exit_kind.
+    def render(self, width: int = 25, height: int = 11, padding: int = 3) -> str:
+        """
+        Render the current track state with an '@' cursor marker.
+        """
+        # Lazy import to avoid circular dependency at load time.
+        from pattern import Pattern
 
-    Slot rule:
-      - If exiting via LEFT/RIGHT, slot is always 1.
-      - If exiting via TOP/BOTTOM, we allocate the next slot on that boundary edge:
-          slot = current_count + 1
-        (This is the "monotone / synchronized creation" convention.)
+        pat = Pattern(surface=self.surface, diagrams=self.diagrams)
+        base = pat.render(width=width, height=height, padding=padding)
 
-    OR correction:
-      - OP pair: new slot k on e maps to new slot k on e2.
-      - OR pair: new slot k on e maps to a new *leftmost* slot on e2, so we:
-          (a) increment slot_count(e2),
-          (b) shift all existing TOP/BOTTOM endpoints on e2 by +1 in that destination square,
-          (c) land at slot 1.
-    """
-    i = st.pos.square
-    N = ann.N
+        sq_i, bp = self.cursor
+        # Build a cursor overlay for the square containing the cursor.
+        lines = base.splitlines()
+        if not lines:
+            return base
 
-    # Determine the exit point and allocate boundary slots if needed.
-    if exit_kind in (PortKind.LEFT, PortKind.RIGHT):
-        exit_point = BoundaryPoint(exit_kind, 1)
-        new_slot_counts = st.slot_counts
-    else:
-        e = boundary_edge_for(i, exit_kind)
-        if not ann.is_marked(e):
-            raise ValueError(f"Cannot exit to unmarked boundary edge: {e}")
-        k = st.slot_count(e) + 1
-        exit_point = BoundaryPoint(exit_kind, k)
-        new_slot_counts = _update_slot_counts(st.slot_counts, e, k)
+        # Re-render just the cursor square to locate the '@' position.
+        # This mirrors Pattern.render's square rendering for consistent placement.
+        def _positions_along(length: int, count: int, pad: int) -> list[int]:
+            if count <= 0:
+                return []
+            inner_len = max(1, length - 2 * pad)
+            if count == 1:
+                return [1 + pad + (inner_len - 1) // 2]
+            return [
+                int(round(1 + pad + i * (inner_len - 1) / (count - 1)))
+                for i in range(count)
+            ]
 
-    # Prepare the square chord set with enough TOP/BOTTOM slots to include any new slot.
-    sq = st.square_chords(i)
-    top_slots = sq.top_slots
-    bottom_slots = sq.bottom_slots
+        # Figure out grid offset for square_i in the rendered output.
+        # Layout is: optional wrap line, TOP label line, then height rows.
+        row_offset = 1 if lines and lines[0].startswith("<->") else 0
+        row_offset += 1  # TOP label line
 
-    if exit_point.kind == PortKind.TOP:
-        top_slots = max(top_slots, exit_point.slot)
-    if exit_point.kind == PortKind.BOTTOM:
-        bottom_slots = max(bottom_slots, exit_point.slot)
+        col_offset = len("        ") + sq_i * (width + 1)
 
-    if st.pos.point.kind == PortKind.TOP:
-        top_slots = max(top_slots, st.pos.point.slot)
-    if st.pos.point.kind == PortKind.BOTTOM:
-        bottom_slots = max(bottom_slots, st.pos.point.slot)
+        sq = self.surface.square(sq_i)
+        inner_w = width - 2
+        inner_h = height - 2
 
-    sq = SquareChordSet(chords=sq.chords, top_slots=top_slots, bottom_slots=bottom_slots)
+        if bp.side == Side.TOP:
+            ports = list(sq.top.ports())
+            xs = _positions_along(inner_w, len(ports), padding)
+            xs = list(reversed(xs))
+            x = xs[ports.index(bp.port)] + col_offset
+            y = row_offset
+        elif bp.side == Side.BOTTOM:
+            ports = list(sq.bottom.ports())
+            xs = _positions_along(inner_w, len(ports), padding)
+            x = xs[ports.index(bp.port)] + col_offset
+            y = row_offset + height - 1
+        elif bp.side == Side.LEFT:
+            ports = list(sq.left.ports())
+            ys = _positions_along(inner_h, len(ports), padding)
+            y = ys[ports.index(bp.port)] + row_offset
+            x = col_offset
+        else:
+            ports = list(sq.right.ports())
+            ys = _positions_along(inner_h, len(ports), padding)
+            ys = list(reversed(ys))
+            y = ys[ports.index(bp.port)] + row_offset
+            x = col_offset + width - 1
 
-    # Add the chord inside square i, enforcing noncrossing.
-    sq2 = sq.add_chord(st.pos.point, exit_point)
-    new_squares = _update_square_mapping(st.squares, i, sq2)
+        # Overlay '@' on the rendered output.
+        if 0 <= y < len(lines):
+            line = lines[y]
+            if 0 <= x < len(line):
+                lines[y] = line[:x] + "@" + line[x + 1 :]
 
-    # Update lambda and used vertical edges if exiting via LEFT/RIGHT.
-    lam = st.lam
-    used_vertical = st.used_vertical
-    if exit_kind in (PortKind.LEFT, PortKind.RIGHT):
-        vid = vertical_edge_id(ann, i, exit_kind)
-        if (used_vertical >> vid) & 1:
-            raise ValueError(f"Vertical edge {vid} already used (at most once).")
-        used_vertical |= (1 << vid)
-        lam += 1
+        return "\n".join(lines)
 
-        # Glue across to the next square / boundary.
-        pos2 = glue_across(ann, i, exit_point)
+    def moves(
+        self,
+        *,
+        multiple_interior_edge_crossings: bool = True,
+        one_dir_only: bool = False,
+        max_ports_per_edge: int | None = None,
+        debug_counts: Optional[dict] = None,
+    ) -> List["TrackState"]:
+        """
+        Return a list of TrackStates reachable by adding one chord from the cursor.
+        """
+        if self.is_closed():
+            return []
 
-        return TrackState(
-            pos=pos2,
-            lam=lam,
-            used_vertical=used_vertical,
-            slot_counts=new_slot_counts,
-            squares=new_squares,
+        square_i, bp = self.cursor
+        out: List[TrackState] = []
+        sides = [Side.TOP, Side.RIGHT, Side.BOTTOM, Side.LEFT]
+        sides = [s for s in sides if s != bp.side]
+
+        for side in sides:
+            if one_dir_only:
+                effective_dir = self.last_moved_dir 
+                if effective_dir == -1 and side == Side.RIGHT:
+                    continue
+                if effective_dir == 1 and side == Side.LEFT:
+                    continue
+            edge = self.surface.square(square_i).edge(side)
+            ports = list(edge.ports())
+            existing_candidates: List[Port] = []
+            for p in ports:
+                chord = Chord(BoundaryPoint(bp.side, bp.port), BoundaryPoint(side, p))
+                if self.diagrams[square_i].can_add_chord(chord):
+                    existing_candidates.append(p)
+
+            if existing_candidates:
+                if debug_counts is not None and self.surface.is_interior_edge(EdgeRef(side, square_i)):
+                    debug_counts["interior_existing_candidates"] = (
+                        debug_counts.get("interior_existing_candidates", 0) + 1
+                    )
+                for p in existing_candidates:
+                    nxt = self._next_state_with_chord(square_i, bp, side, p)
+                    if nxt is not None:
+                        out.append(nxt)
+                continue
+
+            # No existing valid port; try adding a new port on this edge.
+            e_ref = EdgeRef(side, square_i)
+            if self.surface.is_boundary_edge(e_ref):
+                continue
+            if max_ports_per_edge is not None and len(ports) >= max_ports_per_edge:
+                continue
+            if max_ports_per_edge is not None:
+                paired_edge = None
+                if self.surface.is_interior_edge(e_ref):
+                    paired_edge = self.surface._interior_pair(e_ref)
+                elif self.surface.is_marked_edge(e_ref):
+                    be = BoundaryEdge(e_ref.side, e_ref.i)
+                    other, _is_rev = self.surface.pair_info(be)
+                    paired_edge = EdgeRef(other.side, other.i)
+                if paired_edge is not None:
+                    paired_ports = list(self.surface.square(paired_edge.i).edge(paired_edge.side).ports())
+                    if len(paired_ports) >= max_ports_per_edge:
+                        continue
+            if debug_counts is not None and self.surface.is_interior_edge(e_ref):
+                debug_counts["interior_add_attempts"] = (
+                    debug_counts.get("interior_add_attempts", 0) + 1
+                )
+            if (not multiple_interior_edge_crossings) and self.surface.is_interior_edge(e_ref):
+                if len(ports) >= 1:
+                    continue
+            insertion_choices: list[tuple[Port | None, Port | None]] = []
+            if not ports:
+                insertion_choices.append((None, None))
+            else:
+                insertion_choices.append((None, ports[0]))  # before first
+                for i in range(len(ports) - 1):
+                    insertion_choices.append((ports[i], ports[i + 1]))
+                insertion_choices.append((ports[-1], None))  # after last
+
+            for left, right in insertion_choices:
+                nxt = self._next_state_with_new_port(
+                    square_i,
+                    bp,
+                    e_ref,
+                    left=left,
+                    right=right,
+                    debug_counts=debug_counts,
+                )
+                if nxt is not None:
+                    out.append(nxt)
+
+        return out
+
+    def _update_last_and_counts(
+        self,
+        *,
+        surface: MarkedSurface,
+        cursor: Cursor,
+        entry_side: Side,
+        entry_square: int,
+    ) -> Tuple[Optional[bool], Optional[bool], int, int, int, int, int, int]:
+        last_h = self.last_hor_edge_top
+        last_v = self.last_vert_edge_left
+        turn = self.turn_count
+        or_count = self.or_pair_count
+        dy_modifier = self.dy_modifier
+        dy = self.dy
+        last_moved_dir = self.last_moved_dir
+        dominant_x_dir = self.dominant_x_dir
+
+        if entry_side in (Side.TOP, Side.BOTTOM):
+            is_top = (entry_side == Side.TOP)
+            if last_h is not None and last_h == is_top:
+                turn += 1
+                dy_modifier *= -1
+            elif last_h is not None and last_h != is_top:
+                dy += 1 * dy_modifier
+
+        post_sq, post_bp = cursor
+        if post_bp.side in (Side.TOP, Side.BOTTOM):
+            last_h = (post_bp.side == Side.TOP)
+            be = BoundaryEdge(post_bp.side, post_sq)
+            if surface.is_marked(be):
+                _other, is_rev = surface.pair_info(be)
+                if is_rev:
+                    or_count += 1
+                    dominant_x_dir *= -1
+
+        if entry_side in (Side.LEFT, Side.RIGHT):
+            last_v = (entry_side == Side.LEFT)
+            if entry_side == Side.RIGHT:
+                last_moved_dir = -1
+            else:
+                last_moved_dir = 1
+
+        return last_h, last_v, turn, or_count, dy, dy_modifier, last_moved_dir, dominant_x_dir
+
+    @staticmethod
+    def _interior_edge_index(
+        surface: MarkedSurface,
+        entry_side: Side,
+        entry_square: int,
+    ) -> Optional[int]:
+        """
+        Map an interior vertical edge to a stable index in 1..N.
+
+        We index the edge shared by squares i-1 and i as index i (1-based).
+        This means:
+          - RIGHT edge of square i -> index i+1
+          - LEFT edge of square i  -> index i (with square 0 -> index N)
+        """
+        e_ref = EdgeRef(entry_side, entry_square)
+        if not surface.is_interior_edge(e_ref):
+            return None
+        if entry_side == Side.RIGHT:
+            return entry_square + 1
+        if entry_side == Side.LEFT:
+            return entry_square if entry_square > 0 else surface.N
+        return None
+
+    def _next_state_with_chord(
+        self,
+        square_i: int,
+        bp: BoundaryPoint,
+        side: Side,
+        port: Port,
+    ) -> "TrackState | None":
+        surface2, diagrams2, bp2, map_port = self._clone_with_mapped_cursor()
+        port2 = map_port(side, square_i, port)
+        chord = Chord(BoundaryPoint(bp2.side, bp2.port), BoundaryPoint(side, port2))
+        if not diagrams2[square_i].add_chord(chord):
+            return None
+
+        paired = surface2.paired_boundary_point(EdgeRef(side, square_i), port2)
+        if paired is None:
+            return None
+        e2, p2 = paired
+        cursor2 = (e2.i, BoundaryPoint(e2.side, p2))
+        return self._with_updated(
+            surface2,
+            diagrams2,
+            cursor2,
+            entry_side=side,
+            entry_square=square_i,
         )
 
-    # TOP/BOTTOM gluing with OP/OR slot behaviour.
-    e = boundary_edge_for(i, exit_kind)
-    e2, is_rev = ann.pair_info(e)
-    dest_kind = PortKind.TOP if e2.side == Side.TOP else PortKind.BOTTOM
+    def _next_state_with_new_port(
+        self,
+        square_i: int,
+        bp: BoundaryPoint,
+        e_ref: EdgeRef,
+        *,
+        left: Port | None = None,
+        right: Port | None = None,
+        debug_counts: Optional[dict] = None,
+    ) -> "TrackState | None":
+        surface2, diagrams2, bp2, map_port = self._clone_with_mapped_cursor()
+        is_interior = surface2.is_interior_edge(e_ref)
+        left2 = map_port(e_ref.side, e_ref.i, left) if left is not None else None
+        right2 = map_port(e_ref.side, e_ref.i, right) if right is not None else None
+        new_pair = surface2.add_port_between(e_ref, left=left2, right=right2)
+        if new_pair is None:
+            if debug_counts is not None and is_interior:
+                debug_counts["interior_add_fail_add_port"] = (
+                    debug_counts.get("interior_add_fail_add_port", 0) + 1
+                )
+            return None
+        new_port, _paired_port = new_pair
 
-    k = exit_point.slot
-    cur2 = dict(new_slot_counts).get(e2, 0)
+        chord = Chord(BoundaryPoint(bp2.side, bp2.port), BoundaryPoint(e_ref.side, new_port))
+        if not diagrams2[square_i].add_chord(chord):
+            if debug_counts is not None and is_interior:
+                debug_counts["interior_add_fail_add_chord"] = (
+                    debug_counts.get("interior_add_fail_add_chord", 0) + 1
+                )
+            return None
 
-    if not is_rev:
-        # OP: slot k corresponds to slot k.
-        if k > cur2:
-            new_slot_counts = _update_slot_counts(new_slot_counts, e2, k)
-        pos2 = Position(e2.i, BoundaryPoint(dest_kind, k))
-    else:
-        # OR: slot k corresponds to a new leftmost slot on e2.
-        # Under synchronized creation we expect cur2 == k-1; nevertheless we force count to k.
-        new_slot_counts = _update_slot_counts(new_slot_counts, e2, max(cur2 + 1, k))
+        paired = surface2.paired_boundary_point(e_ref, new_port)
+        if paired is None:
+            if debug_counts is not None and is_interior:
+                debug_counts["interior_add_fail_pair"] = (
+                    debug_counts.get("interior_add_fail_pair", 0) + 1
+                )
+            return None
+        e2, p2 = paired
+        cursor2 = (e2.i, BoundaryPoint(e2.side, p2))
+        if debug_counts is not None and is_interior:
+            debug_counts["interior_add_success"] = (
+                debug_counts.get("interior_add_success", 0) + 1
+            )
+        return self._with_updated(
+            surface2,
+            diagrams2,
+            cursor2,
+            entry_side=e_ref.side,
+            entry_square=e_ref.i,
+        )
 
-        # Shift chord endpoints in the destination square along that boundary kind by +1.
-        sq_dest = dict(new_squares).get(e2.i)
-        if sq_dest is not None:
-            sq_dest2 = _shift_square_boundary_slots(sq_dest, dest_kind, +1)
-            new_squares = _update_square_mapping(new_squares, e2.i, sq_dest2)
+    def _clone_with_mapped_cursor(self) -> Tuple[
+        MarkedSurface, Dict[int, ChordDiagram], BoundaryPoint, callable
+    ]:
+        """
+        Clone the surface and diagrams, returning the cloned cursor boundary point.
+        """
+        surface2 = copy.deepcopy(self.surface)
+        diagrams2: Dict[int, ChordDiagram] = {}
 
-        # Land on the new leftmost slot.
-        pos2 = Position(e2.i, BoundaryPoint(dest_kind, 1))
+        def _map_port(side: Side, sq_i: int, port: Port) -> Port:
+            old_edge = self.surface.square(sq_i).edge(side)
+            new_edge = surface2.square(sq_i).edge(side)
+            ports_old = list(old_edge.ports())
+            ports_new = list(new_edge.ports())
+            idx = ports_old.index(port)
+            return ports_new[idx]
 
-    return TrackState(
-        pos=pos2,
-        lam=lam,
-        used_vertical=used_vertical,
-        slot_counts=new_slot_counts,
-        squares=new_squares,
-    )
+        for i in range(self.surface.N):
+            d_old = self.diagrams[i]
+            d_new = ChordDiagram(square=surface2.square(i))
+            for ch in d_old.chords:
+                a = ch.a
+                b = ch.b
+                pa = _map_port(a.side, i, a.port)
+                pb = _map_port(b.side, i, b.port)
+                d_new.add_chord(Chord(BoundaryPoint(a.side, pa), BoundaryPoint(b.side, pb)))
+            diagrams2[i] = d_new
 
+        sq_i, bp = self.cursor
+        mapped_port = _map_port(bp.side, sq_i, bp.port)
+        return surface2, diagrams2, BoundaryPoint(bp.side, mapped_port), _map_port
 
-def initial_state(start_square: int, start_point: BoundaryPoint) -> TrackState:
-    """Construct an initial TrackState with no chords placed yet."""
-    return TrackState(
-        pos=Position(start_square, start_point),
-        lam=0,
-        used_vertical=0,
-        slot_counts=tuple(),
-        squares=tuple(),
-    )
+    def _with_updated(
+        self,
+        surface: MarkedSurface,
+        diagrams: Dict[int, ChordDiagram],
+        cursor: Cursor,
+        *,
+        entry_side: Side,
+        entry_square: int,
+    ) -> "TrackState":
+        dx = list(self.dx)
+        lam = list(self.lam)
+        if entry_side in (Side.LEFT, Side.RIGHT):
+            idx = self._interior_edge_index(surface, entry_side, entry_square)
+            if idx is not None:
+                # Use the dominant direction at the time of the crossing.
+                prev_dom = self.dominant_x_dir
+                moves_with_dominant = (
+                    (entry_side == Side.RIGHT and prev_dom == 1)
+                    or (entry_side == Side.LEFT and prev_dom == -1)
+                )
+                delta = 1 if moves_with_dominant else -1
+                dx[0] += delta
+                dx[idx] += delta
+                lam[0] += 1
+                lam[idx] += 1
+        last_h, last_v, turn, or_count, dy, dy_modifier, last_moved_dir, dominant_x_dir = (
+            self._update_last_and_counts(
+                surface=surface,
+                cursor=cursor,
+                entry_side=entry_side,
+                entry_square=entry_square,
+            )
+        )
+        return TrackState(
+            surface=surface,
+            diagrams=diagrams,
+            cursor=cursor,
+            dy=dy,
+            dx=tuple(dx),
+            lam=tuple(lam),
+            dominant_x_dir=dominant_x_dir,
+            dy_modifier=dy_modifier,
+            or_pair_count=or_count,
+            turn_count=turn,
+            last_hor_edge_top=last_h,
+            last_vert_edge_left=last_v,
+            last_moved_dir=last_moved_dir,
+        )
 
+    @classmethod
+    def initialize(
+        cls,
+        surface: MarkedSurface,
+        *,
+        start_edge: EdgeRef,
+        dy: int = 0,
+        dominant_x_dir: int = 1,
+        dy_modifier: int = 1,
+        or_pair_count: int = 0,
+        turn_count: int = 0,
+        last_hor_edge_top: Optional[bool] = None,
+        last_vert_edge_left: Optional[bool] = None,
+        last_moved_dir: int = 0,
+    ) -> "TrackState | None":
+        """
+        Initialize with exactly one port on every non-boundary edge and no chords.
 
-def _demo() -> None:
-    from annulus import MarkedAnnulus, Side
+        If the start_edge has no port (i.e., it is a boundary edge), return None.
+        """
+        n = surface.N
 
-    print("=== Demo: stepping and square-local noncrossing ===")
-    ann = MarkedAnnulus(N=4)
-    # Mark: T0 <-> B2 (preserving), T1 <-> B3 (preserving)
-    ann.add_marked_pair(ann.edge(Side.TOP, 0), ann.edge(Side.BOTTOM, 2), orientation_reversing=False)
-    ann.add_marked_pair(ann.edge(Side.TOP, 1), ann.edge(Side.BOTTOM, 3), orientation_reversing=False)
-    print(ann)
-    print()
+        # Set ports: boundary edges empty, all other edges exactly one port.
+        for e in surface.all_edge_refs():
+            edge_obj = surface.square(e.i).edge(e.side)
+            if surface.is_boundary_edge(e):
+                edge_obj._set_ports([])
+            else:
+                edge_obj._set_ports([Port(label=f"{e.side.short()}1")])
 
-    st = initial_state(start_square=0, start_point=BoundaryPoint(PortKind.LEFT, 1))
-    print("Start:")
-    print(st)
-    print()
+        # Validate start edge.
+        if surface.is_boundary_edge(start_edge):
+            return None
+        start_ports = surface.square(start_edge.i).edge(start_edge.side).ports()
+        if not start_ports:
+            return None
 
-    # Step 1: inside Q0 connect L -> TOP (allocates T0 slot 1)
-    st = step(ann, st, PortKind.TOP)
-    print("After step to TOP:")
-    print(st)
-    print()
+        cursor = (start_edge.i, BoundaryPoint(start_edge.side, start_ports[0]))
+        diagrams = {i: ChordDiagram(square=surface.square(i)) for i in range(n)}
 
-    # Step 2: now at paired edge (B2 slot 1) on Q2; connect B -> RIGHT (vertical)
-    st = step(ann, st, PortKind.RIGHT)
-    print("After step to RIGHT (uses a vertical edge, lam increments):")
-    print(st)
-    print()
+        if start_edge.side in (Side.TOP, Side.BOTTOM):
+            last_hor_edge_top = (start_edge.side == Side.TOP)
+        if start_edge.side in (Side.LEFT, Side.RIGHT):
+            last_vert_edge_left = (start_edge.side == Side.LEFT)
 
-    # Step 3: now at Q3:LEFT; connect LEFT -> BOTTOM (allocates B3 slot 1)
-    st = step(ann, st, PortKind.BOTTOM)
-    print("After step to BOTTOM:")
-    print(st)
-    print()
+        if start_edge.side in (Side.TOP, Side.BOTTOM):
+            be = BoundaryEdge(start_edge.side, start_edge.i)
+            if surface.is_marked(be):
+                _other, is_rev = surface.pair_info(be)
+                if is_rev:
+                    dominant_x_dir *= -1
 
-
-if __name__ == "__main__":
-    _demo()
+        return cls(
+            surface=surface,
+            diagrams=diagrams,
+            cursor=cursor,
+            dy=dy,
+            dx=tuple(0 for _ in range(n + 1)),
+            lam=tuple(0 for _ in range(n + 1)),
+            dominant_x_dir=dominant_x_dir,
+            dy_modifier=dy_modifier,
+            or_pair_count=or_pair_count,
+            turn_count=turn_count,
+            last_hor_edge_top=last_hor_edge_top,
+            last_vert_edge_left=last_vert_edge_left,
+            last_moved_dir=last_moved_dir,
+        )
