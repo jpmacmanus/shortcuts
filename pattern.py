@@ -100,6 +100,7 @@ class Pattern:
             return "" if label == "--" else label
 
         def _merge_segments(segments: List[str]) -> str:
+            # Overlap boundary columns to remove spacing between squares.
             if not segments:
                 return ""
             out = segments[0]
@@ -151,6 +152,7 @@ class Pattern:
             boundary_left: str,
             boundary_right: str,
         ) -> List[str]:
+            # Local square render with chord lines projected inward.
             grid = [[" " for _ in range(width)] for _ in range(height)]
             grid[0][0] = "+"
             grid[0][width - 1] = "+"

@@ -163,6 +163,7 @@ class _MarkedBase:
         return f"{tag}{'↻' if p.orientation_reversing else ''}"
 
     def _edge_marker(self, e: BoundaryEdge) -> str | None:
+        # Direction hint for marked pairs (OP same direction, OR opposite).
         if e not in self._pairs:
             return None
         p = self._pairs[e]
@@ -285,6 +286,7 @@ class _MarkedBase:
             return "" if label == "--" else label
 
         def _merge_segments(segments: List[str]) -> str:
+            # Overlap boundary columns to remove spacing between squares.
             if not segments:
                 return ""
             out = segments[0]
@@ -416,6 +418,7 @@ class MarkedStrip(_MarkedBase):
         """
         Assign a unique symbol to each paired port group.
         """
+        # Symbols encode identifications across pairs for visualization.
         palette = list(string.digits + string.ascii_uppercase + string.ascii_lowercase)
         sym_idx = 0
         out: Dict[Port, str] = {}

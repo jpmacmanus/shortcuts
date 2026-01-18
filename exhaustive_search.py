@@ -359,7 +359,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
         raise ValueError("START_PREFIX_LENGTH must satisfy 1 <= start <= len(signature)")
 
     candidates = _enumerate_stage_perms(START_PREFIX_LENGTH)
-    basket: set[Tuple[int, ...]] = set()
+    basket: set[Tuple[int, ...]] = set()  # prefixes with no solution so far
 
     sig_prefix = sig_full[:START_PREFIX_LENGTH]
     print("=" * 80)
@@ -436,7 +436,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
     for m in range(START_PREFIX_LENGTH, n):
         new_label = m
         sig_prefix = sig_full[: m + 1]
-        candidates_set: set[Tuple[int, ...]] = set()
+        candidates_set: set[Tuple[int, ...]] = set()  # next frontier
         for base in basket:
             for ext in _insert_label_everywhere(base, new_label):
                 if UNIQUE:

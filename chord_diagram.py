@@ -161,6 +161,7 @@ class ChordDiagram:
 
         grid = [[" " for _ in range(width)] for _ in range(height)]
 
+        # Port positions follow edge orientation to keep crossings consistent.
         # Draw border.
         grid[0][0] = "+"
         grid[0][width - 1] = "+"

@@ -180,6 +180,7 @@ def _strip_position_symmetries(n: int):
 
 
 def canonical_perm_under_symmetry(perm: Sequence[int], *, surface: str, n: int) -> Tuple[int, ...]:
+    # Canonical representative under the surface's symmetry group.
     perm = tuple(perm)
     if surface == "annulus":
         syms = _annulus_position_symmetries(n)

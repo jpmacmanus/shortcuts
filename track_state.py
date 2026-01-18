@@ -234,6 +234,7 @@ class TrackState:
                 continue
             if max_ports_per_edge is not None and len(ports) >= max_ports_per_edge:
                 continue
+            # Cap also applies to the paired edge (marked or interior).
             if max_ports_per_edge is not None:
                 paired_edge = None
                 if self.surface.is_interior_edge(e_ref):
@@ -253,6 +254,7 @@ class TrackState:
             if (not multiple_interior_edge_crossings) and self.surface.is_interior_edge(e_ref):
                 if len(ports) >= 1:
                     continue
+            # Try all insertion positions along the edge.
             insertion_choices: list[tuple[Port | None, Port | None]] = []
             if not ports:
                 insertion_choices.append((None, None))
@@ -284,6 +286,7 @@ class TrackState:
         entry_side: Side,
         entry_square: int,
     ) -> Tuple[Optional[bool], Optional[bool], int, int, int, int, int, int]:
+        # Apply bookkeeping when the path crosses into entry_side.
         last_h = self.last_hor_edge_top
         last_v = self.last_vert_edge_left
         turn = self.turn_count
@@ -427,6 +430,7 @@ class TrackState:
         """
         Clone the surface and diagrams, returning the cloned cursor boundary point.
         """
+        # Deep-copy the surface, then rebuild diagrams by port index.
         surface2 = copy.deepcopy(self.surface)
         diagrams2: Dict[int, ChordDiagram] = {}
 

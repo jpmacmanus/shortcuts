@@ -31,6 +31,7 @@ class SquareStrip:
             raise ValueError("n must be positive")
         squares = [Square.empty() for _ in range(n)]
         for i in range(n - 1):
+            # Share the same Edge object for the interior identification.
             squares[i].right = squares[i + 1].left
         return cls(squares=squares)
 
@@ -62,6 +63,7 @@ class Annulus:
             raise ValueError("n must be positive")
         squares = [Square.empty() for _ in range(n)]
         for i in range(n - 1):
+            # Linear identifications, then wrap the last to the first.
             squares[i].right = squares[i + 1].left
         squares[-1].right = squares[0].left
         return cls(squares=squares)

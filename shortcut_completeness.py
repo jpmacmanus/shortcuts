@@ -31,6 +31,7 @@ def _linprog_feasible(a_eq: List[List[float]], b_eq: List[float]) -> bool:
     """
     Return True if there exists x >= 0 with A_eq x = b_eq.
     """
+    # Feasibility over reals is enough for completeness.
     try:
         from scipy.optimize import linprog
     except Exception as exc:  # pragma: no cover - optional dependency
@@ -56,6 +57,7 @@ def is_complete(track_states: Iterable[TrackState]) -> bool:
     """
     Return True iff the candidate set is complete (LP is infeasible).
     """
+    # Completeness means no nonnegative solution satisfies all equations.
     rows = _collect_dx(track_states)
     if not rows:
         return False

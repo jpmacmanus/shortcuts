@@ -31,6 +31,7 @@ def _edge_index(edge_ports, port) -> int:
 
 
 def _diagram_key(diagram: ChordDiagram) -> Tuple:
+    # Canonicalize a diagram by chord endpoints in current port order.
     key = []
     for ch in diagram.chords:
         a = ch.a
@@ -41,6 +42,7 @@ def _diagram_key(diagram: ChordDiagram) -> Tuple:
 
 
 def _state_key(st: TrackState) -> Tuple:
+    # State identity: cursor position + chord layouts (no weights/counters).
     sq_i, bp = st.cursor
     cursor_key = (
         sq_i,
@@ -52,6 +54,7 @@ def _state_key(st: TrackState) -> Tuple:
 
 
 def _start_edges(surface: MarkedSurface) -> list[EdgeRef]:
+    # Prefer marked TOP edges; fall back to BOTTOM, then any interior edge.
     starts: list[EdgeRef] = []
     top_starts: list[EdgeRef] = []
     bottom_starts: list[EdgeRef] = []
@@ -208,6 +211,7 @@ def _dx_all_pos_or_all_neg(st: TrackState) -> bool:
 
 
 def _uses_all_interior_edges(st: TrackState) -> bool:
+    # Detect whether every interior edge has been used by some chord endpoint.
     all_interior: set[int] = set()
     for e in st.surface.all_edge_refs():
         if not st.surface.is_interior_edge(e):
@@ -447,8 +451,8 @@ def _candidate_or_dx_shortcut(
 
         q: Deque[TrackState] = deque([st0])
         seen: Set[Tuple] = set()
-        expanded = 0
-        generated = 0
+        expanded = 0  # dequeued states
+        generated = 0  # total enqueued successors
 
         while q:
             st = q.popleft()
