@@ -27,7 +27,7 @@ from track_bfs import (
 # Config
 # ----------------------------
 
-SIGNATURE = "I R V H I"
+SIGNATURE = "I R V H I R V"
 SURFACE = "annulus"  # "annulus" or "strip"
 UNIQUE = True
 EXCLUDE_ADJACENT_I = True
@@ -38,6 +38,7 @@ LIMIT_INTERIOR_CROSSINGS = True
 REQUIRE_DX_INFEASIBLE = True
 REQUIRE_EVEN_TURNING = True
 REQUIRE_EVEN_OR_PAIRS = True
+REJECT_ALL_INTERIOR_USED = True
 
 
 
@@ -84,6 +85,7 @@ def _print_header(sig: str) -> None:
     print(f"Require dx infeasible: {REQUIRE_DX_INFEASIBLE}")
     print(f"Require even turning: {REQUIRE_EVEN_TURNING}")
     print(f"Require even OR pairs: {REQUIRE_EVEN_OR_PAIRS}")
+    print(f"Reject all interior used: {REJECT_ALL_INTERIOR_USED}")
     print(f"Max ports per edge: {MAX_PORTS_PER_EDGE}")
     print(f"Debug unsolved: {DEBUG_UNSOLVED}")
     if DEBUG_UNSOLVED:
@@ -138,6 +140,7 @@ def _render_result(
                 require_even_turning=REQUIRE_EVEN_TURNING,
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
+                reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 debug_counts=debug_counts,
@@ -158,6 +161,7 @@ def _render_result(
                 require_even_turning=REQUIRE_EVEN_TURNING,
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
+                reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 progress=SHOW_PROGRESS,
@@ -183,6 +187,7 @@ def _render_result(
                     require_even_turning=REQUIRE_EVEN_TURNING,
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
+                    reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                     debug=False,
                     debug_counts=debug_counts,
                     trace_steps=DEBUG_TRACE_BFS,
@@ -375,6 +380,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                 require_even_turning=REQUIRE_EVEN_TURNING,
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
+                reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 debug_counts=debug_counts,
@@ -403,6 +409,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                 require_even_turning=REQUIRE_EVEN_TURNING,
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
+                reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 progress=SHOW_PROGRESS,
@@ -460,6 +467,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                     require_even_turning=REQUIRE_EVEN_TURNING,
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
+                    reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     debug_counts=debug_counts,
@@ -481,6 +489,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                     require_even_turning=REQUIRE_EVEN_TURNING,
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
+                    reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     progress=SHOW_PROGRESS,
@@ -547,6 +556,7 @@ def main() -> None:
                     require_even_turning=REQUIRE_EVEN_TURNING,
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
+                    reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     debug_counts=debug_counts,
@@ -574,6 +584,7 @@ def main() -> None:
                     require_even_turning=REQUIRE_EVEN_TURNING,
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
+                    reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     progress=SHOW_PROGRESS,

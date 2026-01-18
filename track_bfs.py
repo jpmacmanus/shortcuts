@@ -207,6 +207,28 @@ def _dx_all_pos_or_all_neg(st: TrackState) -> bool:
     return all_pos or all_neg
 
 
+def _uses_all_interior_edges(st: TrackState) -> bool:
+    all_interior: set[int] = set()
+    for e in st.surface.all_edge_refs():
+        if not st.surface.is_interior_edge(e):
+            continue
+        edge_obj = st.surface.square(e.i).edge(e.side)
+        all_interior.add(id(edge_obj))
+    if not all_interior:
+        return False
+
+    used_interior: set[int] = set()
+    for i in range(st.surface.N):
+        diagram = st.diagrams[i]
+        for ch in diagram.chords:
+            for bp in (ch.a, ch.b):
+                e = EdgeRef(bp.side, i)
+                if st.surface.is_interior_edge(e):
+                    edge_obj = st.surface.square(i).edge(bp.side)
+                    used_interior.add(id(edge_obj))
+    return used_interior.issuperset(all_interior)
+
+
 def _simple_constraints_ok(st: TrackState) -> bool:
     if not st.is_closed():
         return False
@@ -396,6 +418,7 @@ def _candidate_or_dx_shortcut(
     require_even_turning: bool,
     require_even_or_pairs: bool,
     require_dy_nonzero: bool,
+    reject_all_interior_used: bool,
     debug: bool,
     debug_counts: Optional[dict] = None,
     progress: bool = False,
@@ -466,6 +489,8 @@ def _candidate_or_dx_shortcut(
                     ok = ok and (st.or_pair_count % 2 == 0)
                 if require_dy_nonzero:
                     ok = ok and (st.dy != 0)
+                if reject_all_interior_used:
+                    ok = ok and (not _uses_all_interior_edges(st))
                 if ok:
                     found.append(st)
                     if _dx_all_pos_or_all_neg(st):
@@ -505,6 +530,7 @@ def collect_candidate_states(
     require_even_turning: bool = True,
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
+    reject_all_interior_used: bool = False,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
     trace_steps: bool = False,
@@ -577,6 +603,8 @@ def collect_candidate_states(
                     ok = ok and (st.or_pair_count % 2 == 0)
                 if require_dy_nonzero:
                     ok = ok and (st.dy != 0)
+                if reject_all_interior_used:
+                    ok = ok and (not _uses_all_interior_edges(st))
                 if ok:
                     found.append(st)
                     if debug:
@@ -816,6 +844,7 @@ def search_shortcut_or_complete_set(
     require_even_turning: bool = True,
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
+    reject_all_interior_used: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
     progress: bool = False,
@@ -835,6 +864,7 @@ def search_shortcut_or_complete_set(
         require_even_turning=require_even_turning,
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
+        reject_all_interior_used=reject_all_interior_used,
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
@@ -868,6 +898,7 @@ def search_shortcut_or_complete_set_with_candidates(
     require_even_turning: bool = True,
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
+    reject_all_interior_used: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
@@ -888,6 +919,7 @@ def search_shortcut_or_complete_set_with_candidates(
         require_even_turning=require_even_turning,
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
+        reject_all_interior_used=reject_all_interior_used,
         debug=debug,
         debug_counts=debug_counts,
         progress=progress,
