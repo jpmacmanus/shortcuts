@@ -87,3 +87,4 @@ dist/
 *.egg-info/
 .eggs/
 legacy code/
+.DS_Store
