@@ -16,6 +16,12 @@ from klein_signature_generator import (
     surfaces_from_signature,
     unique_perms_under_symmetry,
 )
+from directed_klein_signature_generator import (
+    build_directed_surface_from_signature,
+    canonical_perm_under_directed_symmetry,
+    directed_surfaces_from_signature,
+    unique_perms_under_directed_symmetry,
+)
 from track_bfs import (
     collect_candidate_states,
     diagnose_simple_shortcut,
@@ -27,30 +33,42 @@ from track_bfs import (
 # Config
 # ----------------------------
 
-SIGNATURE = "I R V H I R V"
-SURFACE = "annulus"  # "annulus" or "strip"
-UNIQUE = True
-EXCLUDE_ADJACENT_I = True
-PREFIX_PRUNING = True
-START_PREFIX_LENGTH = 2
-REQUIRE_DY_NONZERO = True
-LIMIT_INTERIOR_CROSSINGS = True
-REQUIRE_DX_INFEASIBLE = True
-REQUIRE_EVEN_TURNING = True
-REQUIRE_EVEN_OR_PAIRS = True
-REJECT_ALL_INTERIOR_USED = True
+# Search input
+SIGNATURE = "I R V H I R"  # Klein signature to be searched over.
+SURFACE = "annulus"        # "annulus" or "strip"
+DIRECTED_MODE = False      # make ports directed, to model the 'small splittings' case.
+                           # interior edges in the strip/directed case are not directed.
 
+# Generation / symmetry controls
+UNIQUE = True               # skips surfaces which differ by a symmetry.
+EXCLUDE_ADJACENT_I = True   # skip cases which have trivial solutions due to adjacent I squares.
+                            # ignored when DIRECTED_MODE=True.
+PREFIX_PRUNING = True       # start search on smaller prefix cases and build up to desired case.
+START_PREFIX_LENGTH = 1     # only used when PREFIX_PRUNING=True
 
+# Acceptance constraints
+REQUIRE_DY_NONZERO = True        # only accept tracks with dy != 0
+REQUIRE_DX_INFEASIBLE = True     # require dx != 0:
+                                 #      when raised, will sometimes return multiple candidates 
+                                 #      to account for extra unmarked squares.
+                                 #      at least one of these candidates is guaranteed to work for 
+                                 #      any given assignment of weights.
+REQUIRE_EVEN_TURNING = True      # only accept tracks with an even number of turns.
+REQUIRE_EVEN_OR_PAIRS = True     # only accept orientable tracks (no Mobius band neighbourhood)
+DOMINANT_DIR_ONLY = False        # only move along dominant x-direction (free first move)
+LIMIT_INTERIOR_CROSSINGS = True  # when True, cap interior crossings to one per edge
+REJECT_ALL_INTERIOR_USED = True  # reject solutions that use every interior edge
 
-
-# BFS bounds and minimization parameters.
-MAX_NODES = 20000
+# BFS bounds and minimization parameters
+MAX_NODES = 5000
 MAX_CANDIDATES = 1_000
-MINIMIZE_SEED = None
-MAX_MINIMIZE_SIZE = 20
 MAX_PORTS_PER_EDGE = 3
+MINIMIZE_SEED = None
+MAX_MINIMIZE_SIZE = 30
+
+# Debug / output control
 DEBUG_UNSOLVED = False
-DEBUG_UNSOLVED_MAX = 20
+DEBUG_UNSOLVED_MAX = 30
 DEBUG_TRACE_BFS = False
 DEBUG_TRACE_BFS_MAX = 50
 DEBUG_BFS_STEPS = False
@@ -76,7 +94,8 @@ def _print_header(sig: str) -> None:
     print(f"Signature: {sig}")
     print(f"Surface: {SURFACE}")
     print(f"Unique: {UNIQUE}")
-    print(f"Exclude adjacent I: {EXCLUDE_ADJACENT_I}")
+    print(f"Directed mode: {DIRECTED_MODE}")
+    print(f"Exclude adjacent I: {EXCLUDE_ADJACENT_I and not DIRECTED_MODE}")
     print(f"Prefix pruning: {PREFIX_PRUNING}")
     if PREFIX_PRUNING:
         print(f"Start prefix length: {START_PREFIX_LENGTH}")
@@ -85,6 +104,7 @@ def _print_header(sig: str) -> None:
     print(f"Require dx infeasible: {REQUIRE_DX_INFEASIBLE}")
     print(f"Require even turning: {REQUIRE_EVEN_TURNING}")
     print(f"Require even OR pairs: {REQUIRE_EVEN_OR_PAIRS}")
+    print(f"Dominant dir only: {DOMINANT_DIR_ONLY}")
     print(f"Reject all interior used: {REJECT_ALL_INTERIOR_USED}")
     print(f"Max ports per edge: {MAX_PORTS_PER_EDGE}")
     print(f"Debug unsolved: {DEBUG_UNSOLVED}")
@@ -102,14 +122,32 @@ def _print_header(sig: str) -> None:
     print()
 
 
+def _print_case_header(
+    idx: int,
+    total: int,
+    surface,
+    *,
+    label: Optional[str] = None,
+) -> None:
+    print()
+    print("=" * 80)
+    if label is None:
+        label = "Annulus" if SURFACE == "annulus" else "Strip"
+    print(f"{label} [{idx} / {total}]")
+    print(f"{_COLOR_START}{surface}{_COLOR_RESET}")
+
+
 def _render_result(
     idx: int,
+    total: int,
     surface,
     result: Optional[object] = None,
     candidates: Optional[List[object]] = None,
     debug_counts: Optional[dict] = None,
+    skip_search: bool = False,
     *,
     label: Optional[str] = None,
+    show_header: bool = True,
 ) -> tuple[int, int, int, int]:
     """
     Render a single search result and return (simple, complete, unsolved, max_size).
@@ -119,13 +157,33 @@ def _render_result(
     unsolved_count = 0
     max_complete_size = 0
 
-    print("=" * 80)
-    if label is None:
-        label = "Annulus" if SURFACE == "annulus" else "Strip"
-    print(f"{label} [{idx}]")
-    print(f"{_COLOR_START}{surface}{_COLOR_RESET}")
+    if show_header:
+        _print_case_header(idx, total, surface, label=label)
 
-    if result is None:
+    def _trace_unsolved() -> None:
+        if not DEBUG_BFS_STEPS:
+            return
+        search_shortcut_or_complete_set(
+            surface,
+            max_nodes=MAX_NODES,
+            max_candidates=MAX_CANDIDATES,
+            max_ports_per_edge=MAX_PORTS_PER_EDGE,
+            minimize_seed=MINIMIZE_SEED,
+            max_minimize_size=MAX_MINIMIZE_SIZE,
+            multiple_interior_edge_crossings=not LIMIT_INTERIOR_CROSSINGS,
+            require_even_turning=REQUIRE_EVEN_TURNING,
+            require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
+            require_dy_nonzero=REQUIRE_DY_NONZERO,
+            reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+            dominant_dir_only=DOMINANT_DIR_ONLY,
+            allow_complete_set=REQUIRE_DX_INFEASIBLE,
+            debug=False,
+            progress=False,
+            trace_steps=True,
+            trace_max_steps=DEBUG_BFS_STEPS_MAX,
+        )
+
+    if result is None and not skip_search:
         if DEBUG_UNSOLVED:
             if debug_counts is None:
                 debug_counts = {}
@@ -141,12 +199,13 @@ def _render_result(
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
                 reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 debug_counts=debug_counts,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
-                trace_steps=DEBUG_BFS_STEPS,
+                trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
             )
         else:
@@ -162,15 +221,17 @@ def _render_result(
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
                 reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
-                trace_steps=DEBUG_BFS_STEPS,
+                trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
             )
 
     if result is None:
+        _trace_unsolved()
         if REQUIRE_DX_INFEASIBLE:
             msg = "No simple shortcut or complete set found."
         else:
@@ -188,6 +249,7 @@ def _render_result(
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    dominant_dir_only=DOMINANT_DIR_ONLY,
                     debug=False,
                     debug_counts=debug_counts,
                     trace_steps=DEBUG_TRACE_BFS,
@@ -196,6 +258,9 @@ def _render_result(
                     trace_reset=_COLOR_RESET,
                     trace_max_steps=DEBUG_TRACE_BFS_MAX,
                 )
+            print(
+                f"{_COLOR_FAIL}Total candidates found: {len(candidates)}{_COLOR_RESET}"
+            )
             for c_idx, st in enumerate(candidates[:DEBUG_UNSOLVED_MAX], start=1):
                 print(f"{_COLOR_FAIL}Candidate [{c_idx}]:{_COLOR_RESET}")
                 print(
@@ -236,6 +301,18 @@ def _render_result(
                     f"{_COLOR_FAIL}Interior add fail (pair): "
                     f"{debug_counts.get('interior_add_fail_pair', 0)}{_COLOR_RESET}"
                 )
+                print(
+                    f"{_COLOR_FAIL}Direction block (current IN): "
+                    f"{debug_counts.get('dir_block_current_in', 0)}{_COLOR_RESET}"
+                )
+                print(
+                    f"{_COLOR_FAIL}Direction block (target OUT): "
+                    f"{debug_counts.get('dir_block_out', 0)}{_COLOR_RESET}"
+                )
+                print(
+                    f"{_COLOR_FAIL}Direction block (paired IN): "
+                    f"{debug_counts.get('dir_block_pair_in', 0)}{_COLOR_RESET}"
+                )
         print()
         return (0, 0, 1, 0)
 
@@ -263,7 +340,7 @@ def _render_result(
         print()
         return (0, complete_count, 0, max_complete_size)
 
-    print("Simple shortcut found (dx sign).")
+    print("Simple shortcut found.")
     print(result.render())
     print(f"dy: {result.dy}")
     print(f"dx: {result.dx_linear_form(pretty=True)}")
@@ -285,19 +362,46 @@ def _print_diagnostics(
     complete_count: int,
     unsolved_count: int,
     max_complete_size: int,
+    stage_rows: Optional[List[Tuple[str, int, int, int, int, int]]] = None,
 ) -> None:
     print("=" * 80)
     print("=== Diagnostics ===")
-    print(f"{_COLOR_START}Total cases:{_COLOR_RESET} {total}")
-    print(f"{_COLOR_START}Solved by simple shortcut:{_COLOR_RESET} {simple_count}")
-    print(f"{_COLOR_AMBER}Solved by complete candidate set:{_COLOR_RESET} {complete_count}")
-    print(f"{_COLOR_FAIL}Unsolved:{_COLOR_RESET} {unsolved_count}")
-    if complete_count:
-        print(
-            f"{_COLOR_AMBER}Max complete set size:{_COLOR_RESET} {max_complete_size}"
-        )
+    if stage_rows:
+        header = f"{'Stage':<8} {'Total':>5} {'Simple':>6} {'Complete':>8} {'Unsolved':>8} {'MaxSet':>7}"
+        print(header)
+
+        def _cell(text: str, color: str, width: int) -> str:
+            padded = f"{text:>{width}}"
+            return f"{color}{padded}{_COLOR_RESET}"
+
+        for label, total_s, simple_s, complete_s, unsolved_s, max_s in stage_rows:
+            simple_txt = _cell(str(simple_s), _COLOR_START, 6)
+            complete_txt = _cell(str(complete_s), _COLOR_AMBER, 8)
+            unsolved_txt = _cell(str(unsolved_s), _COLOR_FAIL, 8)
+            max_val = str(max_s if complete_s else "n/a")
+            max_txt = _cell(max_val, _COLOR_AMBER, 7)
+            print(f"{label:<8} {total_s:>5} {simple_txt} {complete_txt} {unsolved_txt} {max_txt}")
+        print("-" * 80)
+        sum_total = sum(r[1] for r in stage_rows)
+        sum_simple = sum(r[2] for r in stage_rows)
+        sum_complete = sum(r[3] for r in stage_rows)
+        sum_unsolved = sum(r[4] for r in stage_rows)
+        simple_txt = _cell(str(sum_simple), _COLOR_START, 6)
+        complete_txt = _cell(str(sum_complete), _COLOR_AMBER, 8)
+        unsolved_txt = _cell(str(sum_unsolved), _COLOR_FAIL, 8)
+        max_txt = " " * 7
+        print(f"{'TOTAL':<8} {sum_total:>5} {simple_txt} {complete_txt} {unsolved_txt} {max_txt}")
     else:
-        print(f"{_COLOR_AMBER}Max complete set size:{_COLOR_RESET} n/a")
+        print(f"{_COLOR_START}Total cases:{_COLOR_RESET} {total}")
+        print(f"{_COLOR_START}Solved by simple shortcut:{_COLOR_RESET} {simple_count}")
+        print(f"{_COLOR_AMBER}Solved by complete candidate set:{_COLOR_RESET} {complete_count}")
+        print(f"{_COLOR_FAIL}Unsolved:{_COLOR_RESET} {unsolved_count}")
+        if complete_count:
+            print(
+                f"{_COLOR_AMBER}Max complete set size:{_COLOR_RESET} {max_complete_size}"
+            )
+        else:
+            print(f"{_COLOR_AMBER}Max complete set size:{_COLOR_RESET} n/a")
 
 
 def _insert_label_everywhere(base: Tuple[int, ...], new_label: int) -> Iterable[Tuple[int, ...]]:
@@ -306,13 +410,39 @@ def _insert_label_everywhere(base: Tuple[int, ...], new_label: int) -> Iterable[
         yield base[:pos] + (new_label,) + base[pos:]
 
 
+def _build_surface(sig, perm):
+    if DIRECTED_MODE:
+        return build_directed_surface_from_signature(sig, perm, surface=SURFACE)
+    return build_surface_from_signature(sig, perm, surface=SURFACE)
+
+
+def _unique_perms(m: int) -> Iterable[Tuple[int, ...]]:
+    if DIRECTED_MODE:
+        return unique_perms_under_directed_symmetry(m, surface=SURFACE)
+    return unique_perms_under_symmetry(m, surface=SURFACE)
+
+
+def _canonical_perm(perm: Tuple[int, ...], *, n: int) -> Tuple[int, ...]:
+    if DIRECTED_MODE:
+        return canonical_perm_under_directed_symmetry(perm, surface=SURFACE, n=n)
+    return canonical_perm_under_symmetry(perm, surface=SURFACE, n=n)
+
+
+def _surfaces(sig):
+    if DIRECTED_MODE:
+        return directed_surfaces_from_signature(sig, surface=SURFACE, unique=UNIQUE)
+    return surfaces_from_signature(sig, surface=SURFACE, unique=UNIQUE, exclude_adjacent_I=EXCLUDE_ADJACENT_I)
+
+
 def _enumerate_stage_perms(m: int) -> List[Tuple[int, ...]]:
     if UNIQUE:
-        return list(unique_perms_under_symmetry(m, surface=SURFACE))
+        return list(_unique_perms(m))
     return list(permutations(range(m)))
 
 
 def _perm_has_adjacent_I(sig, perm, *, surface: str) -> bool:
+    if DIRECTED_MODE:
+        return False
     n = len(sig)
     is_I = [s.name == "I" for s in sig]
     for i in range(n):
@@ -353,7 +483,7 @@ def _max_ports_on_any_edge(surface) -> int:
     return max_ports
 
 
-def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
+def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tuple[str, int, int, int, int, int]]]:
     n = len(sig_full)
     if START_PREFIX_LENGTH < 1 or START_PREFIX_LENGTH > n:
         raise ValueError("START_PREFIX_LENGTH must satisfy 1 <= start <= len(signature)")
@@ -362,12 +492,24 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
     basket: set[Tuple[int, ...]] = set()  # prefixes with no solution so far
 
     sig_prefix = sig_full[:START_PREFIX_LENGTH]
+    stage_rows: List[Tuple[str, int, int, int, int, int]] = []
+    simple_total = 0
+    complete_total = 0
+    unsolved_total = 0
+    max_complete_size = 0
+    total_cases = 0
     print("=" * 80)
     print(f"Stage {START_PREFIX_LENGTH}/{n} prefix={list(sig_prefix)}")
     print(f"Frontier size: {len(candidates)}")
+    stage_simple = 0
+    stage_complete = 0
+    stage_unsolved = 0
+    stage_max = 0
     for idx, perm in enumerate(candidates, start=1):
-        surface_obj = build_surface_from_signature(sig_prefix, perm, surface=SURFACE)
+        surface_obj = _build_surface(sig_prefix, perm)
         debug_counts: dict = {}
+        stage_total = len(candidates)
+        _print_case_header(idx, stage_total, surface_obj, label=f"Stage {START_PREFIX_LENGTH}")
         if DEBUG_UNSOLVED:
             result, candidates = search_shortcut_or_complete_set_with_candidates(
                 surface_obj,
@@ -381,22 +523,37 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
                 reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 debug_counts=debug_counts,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
-                trace_steps=DEBUG_BFS_STEPS,
+                trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
             )
-            _render_result(
+            s, c, u, msize = _render_result(
                 idx,
+                stage_total,
                 surface_obj,
                 result,
                 candidates=candidates,
                 debug_counts=debug_counts,
                 label=f"Stage {START_PREFIX_LENGTH}",
+                skip_search=True,
+                show_header=False,
             )
+            stage_simple += s
+            stage_complete += c
+            stage_unsolved += u
+            stage_max = max(stage_max, msize)
+            if START_PREFIX_LENGTH == n:
+                total_cases += 1
+                simple_total += s
+                complete_total += c
+                unsolved_total += u
+                if msize > max_complete_size:
+                    max_complete_size = msize
         else:
             result = search_shortcut_or_complete_set(
                 surface_obj,
@@ -410,51 +567,81 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
                 reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
                 debug=False,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
-                trace_steps=DEBUG_BFS_STEPS,
+                trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
             )
-            _render_result(
+            s, c, u, msize = _render_result(
                 idx,
+                stage_total,
                 surface_obj,
                 result,
                 label=f"Stage {START_PREFIX_LENGTH}",
+                skip_search=True,
+                show_header=False,
             )
+            stage_simple += s
+            stage_complete += c
+            stage_unsolved += u
+            stage_max = max(stage_max, msize)
+            if START_PREFIX_LENGTH == n:
+                total_cases += 1
+                simple_total += s
+                complete_total += c
+                unsolved_total += u
+                if msize > max_complete_size:
+                    max_complete_size = msize
         if result is None:
             basket.add(perm)
     print(f"Remaining bad prefixes: {len(basket)}")
 
-    simple_total = 0
-    complete_total = 0
-    unsolved_total = 0
-    max_complete_size = 0
-    total_cases = 0
+    if START_PREFIX_LENGTH == n:
+        stage_rows.append(
+            (f"{START_PREFIX_LENGTH}/{n}", total_cases, stage_simple, stage_complete, stage_unsolved, stage_max)
+        )
+        return simple_total, complete_total, unsolved_total, max_complete_size, total_cases, stage_rows
+    stage_rows.append(
+        (f"{START_PREFIX_LENGTH}/{n}", stage_total, stage_simple, stage_complete, stage_unsolved, stage_max)
+    )
 
     for m in range(START_PREFIX_LENGTH, n):
+        stage_simple = 0
+        stage_complete = 0
+        stage_unsolved = 0
+        stage_max = 0
         new_label = m
         sig_prefix = sig_full[: m + 1]
         candidates_set: set[Tuple[int, ...]] = set()  # next frontier
         for base in basket:
             for ext in _insert_label_everywhere(base, new_label):
                 if UNIQUE:
-                    ext = canonical_perm_under_symmetry(ext, surface=SURFACE, n=m + 1)
+                    ext = _canonical_perm(ext, n=m + 1)
                 candidates_set.add(ext)
         candidates = sorted(candidates_set)
         basket = set()
 
         is_final = (m + 1 == n)
+        if is_final and EXCLUDE_ADJACENT_I and not DIRECTED_MODE:
+            total_final = sum(
+                1 for perm in candidates if not _perm_has_adjacent_I(sig_full, perm, surface=SURFACE)
+            )
+        else:
+            total_final = len(candidates)
         print("=" * 80)
         print(f"Stage {m + 1}/{n} prefix={list(sig_prefix)}")
         print(f"Frontier size: {len(candidates)}")
+        stage_total = len(candidates)
         for idx, perm in enumerate(candidates, start=1):
-            if is_final and EXCLUDE_ADJACENT_I:
+            if is_final and EXCLUDE_ADJACENT_I and not DIRECTED_MODE:
                 if _perm_has_adjacent_I(sig_full, perm, surface=SURFACE):
                     continue
-            surface_obj = build_surface_from_signature(sig_prefix, perm, surface=SURFACE)
+            surface_obj = _build_surface(sig_prefix, perm)
             debug_counts = {}
+            _print_case_header(idx, stage_total, surface_obj, label=f"Stage {m + 1}")
             if DEBUG_UNSOLVED:
                 result, candidates = search_shortcut_or_complete_set_with_candidates(
                     surface_obj,
@@ -468,12 +655,13 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     debug_counts=debug_counts,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
-                    trace_steps=DEBUG_BFS_STEPS,
+                    trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 )
             else:
@@ -490,41 +678,59 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int]:
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
-                    trace_steps=DEBUG_BFS_STEPS,
+                    trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 )
             if is_final:
                 total_cases += 1
                 s, c, u, msize = _render_result(
                     total_cases,
+                    total_final,
                     surface_obj,
                     result,
                     candidates=candidates,
                     debug_counts=debug_counts,
+                    skip_search=True,
+                    show_header=False,
                 )
                 simple_total += s
                 complete_total += c
                 unsolved_total += u
                 if msize > max_complete_size:
                     max_complete_size = msize
+                stage_simple += s
+                stage_complete += c
+                stage_unsolved += u
+                stage_max = max(stage_max, msize)
             else:
-                _render_result(
+                s, c, u, msize = _render_result(
                     idx,
+                    stage_total,
                     surface_obj,
                     result,
                     candidates=candidates,
                     debug_counts=debug_counts,
                     label=f"Stage {m + 1}",
+                    skip_search=True,
+                    show_header=False,
                 )
+                stage_simple += s
+                stage_complete += c
+                stage_unsolved += u
+                stage_max = max(stage_max, msize)
                 if result is None:
                     basket.add(perm)
         print(f"Remaining bad prefixes: {len(basket)}")
+        stage_rows.append(
+            (f"{m + 1}/{n}", total_final if is_final else stage_total, stage_simple, stage_complete, stage_unsolved, stage_max)
+        )
 
-    return simple_total, complete_total, unsolved_total, max_complete_size, total_cases
+    return simple_total, complete_total, unsolved_total, max_complete_size, total_cases, stage_rows
 
 
 def main() -> None:
@@ -535,15 +741,12 @@ def main() -> None:
     unsolved_total = 0
     max_complete_size = 0
 
+    stage_rows: List[Tuple[str, int, int, int, int, int]] = []
     if not PREFIX_PRUNING:
-        surfaces = surfaces_from_signature(
-            SIGNATURE,
-            surface=SURFACE,
-            unique=UNIQUE,
-            exclude_adjacent_I=EXCLUDE_ADJACENT_I,
-        )
+        surfaces = _surfaces(SIGNATURE)
         for idx, surface in enumerate(surfaces, start=1):
             debug_counts = {}
+            _print_case_header(idx, len(surfaces), surface)
             if DEBUG_UNSOLVED:
                 result, candidates = search_shortcut_or_complete_set_with_candidates(
                     surface,
@@ -557,20 +760,24 @@ def main() -> None:
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     debug_counts=debug_counts,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
-                    trace_steps=DEBUG_BFS_STEPS,
+                    trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 )
                 s, c, u, m = _render_result(
                     idx,
+                    len(surfaces),
                     surface,
                     result,
                     candidates=candidates,
                     debug_counts=debug_counts,
+                    skip_search=True,
+                    show_header=False,
                 )
             else:
                 result = search_shortcut_or_complete_set(
@@ -585,20 +792,29 @@ def main() -> None:
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
-                    trace_steps=DEBUG_BFS_STEPS,
+                    trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 )
-                s, c, u, m = _render_result(idx, surface, result)
+                s, c, u, m = _render_result(
+                    idx,
+                    len(surfaces),
+                    surface,
+                    result,
+                    skip_search=True,
+                    show_header=False,
+                )
             simple_total += s
             complete_total += c
             unsolved_total += u
             if m > max_complete_size:
                 max_complete_size = m
         total = len(surfaces)
+        stage_rows.append(("all", total, simple_total, complete_total, unsolved_total, max_complete_size))
     else:
         sig_full = parse_klein_signature(SIGNATURE)
         (
@@ -607,6 +823,7 @@ def main() -> None:
             unsolved_total,
             max_complete_size,
             total,
+            stage_rows,
         ) = _prefix_pruning_search(sig_full)
 
     _print_diagnostics(
@@ -615,6 +832,7 @@ def main() -> None:
         complete_count=complete_total,
         unsolved_count=unsolved_total,
         max_complete_size=max_complete_size,
+        stage_rows=stage_rows,
     )
 
 

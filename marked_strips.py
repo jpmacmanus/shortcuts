@@ -185,6 +185,8 @@ class _MarkedBase:
         marker_top: str | None,
         marker_bottom: str | None,
         right_top_to_bottom: bool,
+        edge_dir_lookup=None,
+        square_index: int | None = None,
     ) -> List[str]:
         if width < 5 or height < 5:
             raise ValueError("width and height must be at least 5")
@@ -204,11 +206,30 @@ class _MarkedBase:
             grid[y][0] = "|"
             grid[y][width - 1] = "|"
 
+        def _edge_dir_value(side: Side) -> str | None:
+            if edge_dir_lookup is None or square_index is None:
+                return None
+            d = edge_dir_lookup(EdgeRef(side, square_index))
+            return getattr(d, "value", d)
+
+        def _place_edge_arrow(side: Side, row: int, col: int, on_char: str) -> None:
+            d = _edge_dir_value(side)
+            if d is None or d == "undirected":
+                return
+            if grid[row][col] != on_char:
+                return
+            if side == Side.TOP:
+                grid[row][col] = "v" if d == "in" else "^"
+            elif side == Side.BOTTOM:
+                grid[row][col] = "^" if d == "in" else "v"
+            elif side == Side.LEFT:
+                grid[row][col] = ">" if d == "in" else "<"
+            elif side == Side.RIGHT:
+                grid[row][col] = "<" if d == "in" else ">"
+
         mid_x = width // 2
-        if marker_top and grid[0][mid_x] == "-":
-            grid[0][mid_x] = marker_top
-        if marker_bottom and grid[height - 1][mid_x] == "-":
-            grid[height - 1][mid_x] = marker_bottom
+        _place_edge_arrow(Side.TOP, 0, width - 2, "-")
+        _place_edge_arrow(Side.BOTTOM, height - 1, width - 2, "-")
 
         if boundary_left == "double":
             for y in range(1, height - 1):
@@ -227,6 +248,8 @@ class _MarkedBase:
             for y in (mid - 1, mid, mid + 1):
                 if 0 < y < height - 1:
                     grid[y][width - 1] = "V"
+        _place_edge_arrow(Side.LEFT, height - 2, 0, "|")
+        _place_edge_arrow(Side.RIGHT, height - 2, width - 1, "|")
 
         inner_w = width - 2
         inner_h = height - 2
@@ -272,6 +295,22 @@ class _MarkedBase:
             if Side.RIGHT in interior_sides:
                 continue
             grid[y][width - 1] = port_symbols.get(p, "o")[:1]
+
+        def _place_marker_on_edge(row: int, marker: str | None) -> None:
+            if not marker:
+                return
+            candidates = [
+                x
+                for x in range(1, width - 1)
+                if grid[row][x] == "-" and x != width - 2
+            ]
+            if not candidates:
+                return
+            best = min(candidates, key=lambda x: abs(x - mid_x))
+            grid[row][best] = marker
+
+        _place_marker_on_edge(0, marker_top)
+        _place_marker_on_edge(height - 1, marker_bottom)
 
         return ["".join(row) for row in grid]
 
@@ -332,19 +371,19 @@ class _MarkedBase:
                     marker_top=marker_top,
                     marker_bottom=marker_bottom,
                     right_top_to_bottom=right_top_to_bottom,
+                    edge_dir_lookup=getattr(self, "edge_direction", None),
+                    square_index=idx,
                 )
             )
 
         combined: List[str] = []
-        if wrap:
-            combined.append("<-> wraparound")
-        combined.append(f"TOP:    {label_line_top}")
+        combined.append(f"        {label_line_top}")
         for row in range(height):
             line = square_lines[0][row]
             for i in range(1, self.N):
                 line += square_lines[i][row][1:]
             combined.append("        " + line)
-        combined.append(f"BOTTOM: {label_line_bottom}")
+        combined.append(f"        {label_line_bottom}")
         return "\n".join(combined)
 
 

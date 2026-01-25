@@ -94,6 +94,9 @@ class Pattern:
         labels = self.surface._pair_labels()  # type: ignore[attr-defined]
         top_labels = [self.surface._edge_label(self.surface.edge(Side.TOP, i), labels) for i in range(self.surface.N)]  # type: ignore[attr-defined]
         bottom_labels = [self.surface._edge_label(self.surface.edge(Side.BOTTOM, i), labels) for i in range(self.surface.N)]  # type: ignore[attr-defined]
+
+        # Directed wrappers expose annulus/strip via attribute forwarding.
+        is_annulus = hasattr(self.surface, "annulus") and not hasattr(self.surface, "strip")
         port_symbols = self._pair_symbol_map()
 
         def _blank_if_none(label: str) -> str:
@@ -165,6 +168,27 @@ class Pattern:
                 grid[y][0] = "|"
                 grid[y][width - 1] = "|"
 
+            def _edge_dir_value(side: Side) -> str | None:
+                if not hasattr(self.surface, "edge_direction"):
+                    return None
+                d = self.surface.edge_direction(EdgeRef(side, sq_index))  # type: ignore[attr-defined]
+                return getattr(d, "value", d)
+
+            def _place_edge_arrow(side: Side, row: int, col: int, on_char: str) -> None:
+                d = _edge_dir_value(side)
+                if d is None or d == "undirected":
+                    return
+                if grid[row][col] != on_char:
+                    return
+                if side == Side.TOP:
+                    grid[row][col] = "v" if d == "in" else "^"
+                elif side == Side.BOTTOM:
+                    grid[row][col] = "^" if d == "in" else "v"
+                elif side == Side.LEFT:
+                    grid[row][col] = ">" if d == "in" else "<"
+                elif side == Side.RIGHT:
+                    grid[row][col] = "<" if d == "in" else ">"
+
             marker_top = self.surface._edge_marker(self.surface.edge(Side.TOP, sq_index))  # type: ignore[attr-defined]
             marker_bottom = self.surface._edge_marker(self.surface.edge(Side.BOTTOM, sq_index))  # type: ignore[attr-defined]
             mid_x = width // 2
@@ -172,6 +196,8 @@ class Pattern:
                 grid[0][mid_x] = marker_top
             if marker_bottom and grid[height - 1][mid_x] == "-":
                 grid[height - 1][mid_x] = marker_bottom
+            _place_edge_arrow(Side.TOP, 0, width - 2, "-")
+            _place_edge_arrow(Side.BOTTOM, height - 1, width - 2, "-")
 
             if boundary_left == "double":
                 for y in range(1, height - 1):
@@ -190,6 +216,8 @@ class Pattern:
                 for y in (mid - 1, mid, mid + 1):
                     if 0 < y < height - 1:
                         grid[y][width - 1] = "V"
+            _place_edge_arrow(Side.LEFT, height - 2, 0, "|")
+            _place_edge_arrow(Side.RIGHT, height - 2, width - 1, "|")
 
             inner_w = width - 2
             inner_h = height - 2
@@ -256,7 +284,7 @@ class Pattern:
         for i, d in enumerate(diagrams_in_order):
             boundary_left = "none"
             boundary_right = "none"
-            if isinstance(self.surface, MarkedAnnulus):
+            if is_annulus:
                 if i == 0:
                     boundary_left = "caret"
                 if i == self.surface.N - 1:
@@ -276,15 +304,13 @@ class Pattern:
             )
 
         combined: List[str] = []
-        if isinstance(self.surface, MarkedAnnulus):
-            combined.append("<-> wraparound")
-        combined.append(f"TOP:    {label_line_top}")
+        combined.append(f"        {label_line_top}")
         for row in range(height):
             line = square_lines[0][row]
             for i in range(1, self.surface.N):
                 line += square_lines[i][row][1:]
             combined.append("        " + line)
-        combined.append(f"BOTTOM: {label_line_bottom}")
+        combined.append(f"        {label_line_bottom}")
         return "\n".join(combined)
 
     def __str__(self) -> str:

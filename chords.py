@@ -41,7 +41,9 @@ class Chord:
         if self.a.side == self.b.side:
             raise ValueError("Chord endpoints must be on distinct sides")
         if self.a.port is self.b.port:
-            raise ValueError("Chord endpoints must be distinct ports")
+            # Allow LEFT/RIGHT reuse for the N=1 annulus self-identified edge case.
+            if {self.a.side, self.b.side} != {Side.LEFT, Side.RIGHT}:
+                raise ValueError("Chord endpoints must be distinct ports")
 
 
 def boundary_cyclic_order(square: Square) -> List[BoundaryPoint]:

@@ -21,6 +21,31 @@ MarkedSurface = Union[MarkedStrip, MarkedAnnulus]
 Cursor = Tuple[int, BoundaryPoint]  # (square index, boundary point)
 
 
+def _edge_dir_value(surface: MarkedSurface, e: EdgeRef) -> str | None:
+    if not hasattr(surface, "edge_direction"):
+        return None
+    d = surface.edge_direction(e)  # type: ignore[attr-defined]
+    return getattr(d, "value", d)
+
+
+def _dir_allows_in(val: str | None) -> bool:
+    return val in (None, "in", "undirected")
+
+
+def _dir_allows_out(val: str | None) -> bool:
+    return val in (None, "out", "undirected")
+
+
+def _paired_edge_ref(surface: MarkedSurface, e: EdgeRef) -> EdgeRef | None:
+    if surface.is_interior_edge(e):
+        return surface._interior_pair(e)  # type: ignore[attr-defined]
+    if surface.is_marked_edge(e):
+        be = BoundaryEdge(e.side, e.i)
+        other, _is_rev = surface.pair_info(be)
+        return EdgeRef(other.side, other.i)
+    return None
+
+
 @dataclass(frozen=True)
 class TrackState:
     """
@@ -188,6 +213,7 @@ class TrackState:
         *,
         multiple_interior_edge_crossings: bool = True,
         one_dir_only: bool = False,
+        dominant_dir_only: bool = False,
         max_ports_per_edge: int | None = None,
         debug_counts: Optional[dict] = None,
     ) -> List["TrackState"]:
@@ -198,6 +224,12 @@ class TrackState:
             return []
 
         square_i, bp = self.cursor
+        if not _dir_allows_in(_edge_dir_value(self.surface, EdgeRef(bp.side, square_i))):
+            if debug_counts is not None:
+                debug_counts["dir_block_current_in"] = (
+                    debug_counts.get("dir_block_current_in", 0) + 1
+                )
+            return []
         out: List[TrackState] = []
         sides = [Side.TOP, Side.RIGHT, Side.BOTTOM, Side.LEFT]
         sides = [s for s in sides if s != bp.side]
@@ -209,8 +241,26 @@ class TrackState:
                     continue
                 if effective_dir == 1 and side == Side.LEFT:
                     continue
+            if dominant_dir_only:
+                if self.dominant_x_dir == 1 and side == Side.LEFT:
+                    continue
+                if self.dominant_x_dir == -1 and side == Side.RIGHT:
+                    continue
+            e_ref = EdgeRef(side, square_i)
             edge = self.surface.square(square_i).edge(side)
             ports = list(edge.ports())
+            if not _dir_allows_out(_edge_dir_value(self.surface, e_ref)):
+                if debug_counts is not None:
+                    debug_counts["dir_block_out"] = debug_counts.get("dir_block_out", 0) + 1
+                continue
+            paired_edge = _paired_edge_ref(self.surface, e_ref)
+            if paired_edge is not None:
+                if not _dir_allows_in(_edge_dir_value(self.surface, paired_edge)):
+                    if debug_counts is not None:
+                        debug_counts["dir_block_pair_in"] = (
+                            debug_counts.get("dir_block_pair_in", 0) + 1
+                        )
+                    continue
             existing_candidates: List[Port] = []
             for p in ports:
                 chord = Chord(BoundaryPoint(bp.side, bp.port), BoundaryPoint(side, p))
@@ -223,7 +273,13 @@ class TrackState:
                         debug_counts.get("interior_existing_candidates", 0) + 1
                     )
                 for p in existing_candidates:
-                    nxt = self._next_state_with_chord(square_i, bp, side, p)
+                    nxt = self._next_state_with_chord(
+                        square_i,
+                        bp,
+                        side,
+                        p,
+                        dominant_dir_only=dominant_dir_only,
+                    )
                     if nxt is not None:
                         out.append(nxt)
                 continue
@@ -271,6 +327,7 @@ class TrackState:
                     e_ref,
                     left=left,
                     right=right,
+                    dominant_dir_only=dominant_dir_only,
                     debug_counts=debug_counts,
                 )
                 if nxt is not None:
@@ -285,6 +342,7 @@ class TrackState:
         cursor: Cursor,
         entry_side: Side,
         entry_square: int,
+        dominant_override: Optional[int] = None,
     ) -> Tuple[Optional[bool], Optional[bool], int, int, int, int, int, int]:
         # Apply bookkeeping when the path crosses into entry_side.
         last_h = self.last_hor_edge_top
@@ -295,6 +353,8 @@ class TrackState:
         dy = self.dy
         last_moved_dir = self.last_moved_dir
         dominant_x_dir = self.dominant_x_dir
+        if dominant_override is not None:
+            dominant_x_dir = dominant_override
 
         if entry_side in (Side.TOP, Side.BOTTOM):
             is_top = (entry_side == Side.TOP)
@@ -352,6 +412,8 @@ class TrackState:
         bp: BoundaryPoint,
         side: Side,
         port: Port,
+        *,
+        dominant_dir_only: bool = False,
     ) -> "TrackState | None":
         surface2, diagrams2, bp2, map_port = self._clone_with_mapped_cursor()
         port2 = map_port(side, square_i, port)
@@ -370,6 +432,7 @@ class TrackState:
             cursor2,
             entry_side=side,
             entry_square=square_i,
+            dominant_dir_only=dominant_dir_only,
         )
 
     def _next_state_with_new_port(
@@ -380,6 +443,7 @@ class TrackState:
         *,
         left: Port | None = None,
         right: Port | None = None,
+        dominant_dir_only: bool = False,
         debug_counts: Optional[dict] = None,
     ) -> "TrackState | None":
         surface2, diagrams2, bp2, map_port = self._clone_with_mapped_cursor()
@@ -422,6 +486,7 @@ class TrackState:
             cursor2,
             entry_side=e_ref.side,
             entry_square=e_ref.i,
+            dominant_dir_only=dominant_dir_only,
         )
 
     def _clone_with_mapped_cursor(self) -> Tuple[
@@ -465,14 +530,18 @@ class TrackState:
         *,
         entry_side: Side,
         entry_square: int,
+        dominant_dir_only: bool = False,
     ) -> "TrackState":
         dx = list(self.dx)
         lam = list(self.lam)
+        dominant_override = None
+        if dominant_dir_only and self.last_moved_dir == 0 and entry_side in (Side.LEFT, Side.RIGHT):
+            dominant_override = 1 if entry_side == Side.RIGHT else -1
         if entry_side in (Side.LEFT, Side.RIGHT):
             idx = self._interior_edge_index(surface, entry_side, entry_square)
             if idx is not None:
                 # Use the dominant direction at the time of the crossing.
-                prev_dom = self.dominant_x_dir
+                prev_dom = dominant_override if dominant_override is not None else self.dominant_x_dir
                 moves_with_dominant = (
                     (entry_side == Side.RIGHT and prev_dom == 1)
                     or (entry_side == Side.LEFT and prev_dom == -1)
@@ -488,6 +557,7 @@ class TrackState:
                 cursor=cursor,
                 entry_side=entry_side,
                 entry_square=entry_square,
+                dominant_override=dominant_override,
             )
         )
         return TrackState(
@@ -538,6 +608,8 @@ class TrackState:
 
         # Validate start edge.
         if surface.is_boundary_edge(start_edge):
+            return None
+        if not _dir_allows_in(_edge_dir_value(surface, start_edge)):
             return None
         start_ports = surface.square(start_edge.i).edge(start_edge.side).ports()
         if not start_ports:

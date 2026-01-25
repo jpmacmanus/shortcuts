@@ -37,6 +37,9 @@ class ChordDiagram:
     def can_add_chord(self, chord: Chord) -> bool:
         """Return True if adding chord would preserve diagram constraints."""
         used = self._used_ports()
+        used_ports = {bp.port for bp in used}
+        if chord.a.port in used_ports or chord.b.port in used_ports:
+            return False
         if chord.a in used or chord.b in used:
             return False
         for other in self.chords:

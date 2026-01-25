@@ -26,6 +26,17 @@ _COLOR_RESET = "\033[0m"
 _COLOR_SUCCESS = "\033[32m"
 
 
+def _edge_dir_value(surface: MarkedSurface, e: EdgeRef) -> str | None:
+    if not hasattr(surface, "edge_direction"):
+        return None
+    d = surface.edge_direction(e)  # type: ignore[attr-defined]
+    return getattr(d, "value", d)
+
+
+def _dir_allows_in(val: str | None) -> bool:
+    return val in (None, "in", "undirected")
+
+
 def _edge_index(edge_ports, port) -> int:
     return list(edge_ports).index(port)
 
@@ -53,42 +64,38 @@ def _state_key(st: TrackState) -> Tuple:
     return (cursor_key, diagrams_key)
 
 
-def _start_edges(surface: MarkedSurface) -> list[EdgeRef]:
-    # Prefer marked TOP edges; fall back to BOTTOM, then any interior edge.
+def _start_edges(surface: MarkedSurface, *, allow_bottom: bool) -> list[EdgeRef]:
+    # Prefer marked TOP edges; optionally include marked BOTTOM edges.
     starts: list[EdgeRef] = []
-    top_starts: list[EdgeRef] = []
-    bottom_starts: list[EdgeRef] = []
     for p in surface.all_pairs():
-        a_top = p.a.side == Side.TOP
-        b_top = p.b.side == Side.TOP
-        a_bottom = p.a.side == Side.BOTTOM
-        b_bottom = p.b.side == Side.BOTTOM
-        if a_top and b_top:
-            top_starts.append(EdgeRef(p.a.side, p.a.i))
-        elif a_top:
-            top_starts.append(EdgeRef(p.a.side, p.a.i))
-        elif b_top:
-            top_starts.append(EdgeRef(p.b.side, p.b.i))
-        elif a_bottom and b_bottom:
-            bottom_starts.append(EdgeRef(p.a.side, p.a.i))
-        elif a_bottom:
-            bottom_starts.append(EdgeRef(p.a.side, p.a.i))
-        elif b_bottom:
-            bottom_starts.append(EdgeRef(p.b.side, p.b.i))
-    starts = top_starts if top_starts else bottom_starts
+        if p.a.side == Side.TOP:
+            starts.append(EdgeRef(p.a.side, p.a.i))
+        if p.b.side == Side.TOP:
+            starts.append(EdgeRef(p.b.side, p.b.i))
+        if allow_bottom:
+            if p.a.side == Side.BOTTOM:
+                starts.append(EdgeRef(p.a.side, p.a.i))
+            if p.b.side == Side.BOTTOM:
+                starts.append(EdgeRef(p.b.side, p.b.i))
+
     if starts:
         seen: set[tuple[Side, int]] = set()
         unique: list[EdgeRef] = []
         for e in starts:
+            if not _dir_allows_in(_edge_dir_value(surface, e)):
+                continue
             key = (e.side, e.i)
             if key in seen:
                 continue
             seen.add(key)
             unique.append(e)
         return unique
+
+    # Fallback: any interior IN edge.
     for e in surface.all_edge_refs():
-        if surface.is_interior_edge(e):
+        if surface.is_interior_edge(e) and _dir_allows_in(_edge_dir_value(surface, e)):
             starts.append(e)
+
     if not starts:
         raise ValueError("No marked or interior edges available to start")
     return starts
@@ -102,6 +109,7 @@ def find_pattern_bfs(
     max_ports_per_edge: int | None = 5,
     multiple_interior_edge_crossings: bool = True,
     one_dir_only: bool = False,
+    dominant_dir_only: bool = False,
     even_turning: bool = False,
     dy_nonzero: bool = False,
     even_or_pair_count: bool = False,
@@ -112,7 +120,7 @@ def find_pattern_bfs(
     Run a BFS to find a valid pattern. Returns None if no pattern found within bounds.
     """
     found: list[Pattern] = []
-    for start_edge in _start_edges(surface):
+    for start_edge in _start_edges(surface, allow_bottom=not dy_nonzero):
         st0 = TrackState.initialize(surface, start_edge=start_edge)
         if st0 is None:
             continue
@@ -184,6 +192,7 @@ def find_pattern_bfs(
             moves = st.moves(
                 multiple_interior_edge_crossings=multiple_interior_edge_crossings,
                 one_dir_only=one_dir_only,
+                dominant_dir_only=dominant_dir_only,
                 max_ports_per_edge=max_ports_per_edge,
             )
             for nxt in moves:
@@ -423,6 +432,7 @@ def _candidate_or_dx_shortcut(
     require_even_or_pairs: bool,
     require_dy_nonzero: bool,
     reject_all_interior_used: bool,
+    dominant_dir_only: bool = False,
     debug: bool,
     debug_counts: Optional[dict] = None,
     progress: bool = False,
@@ -436,7 +446,7 @@ def _candidate_or_dx_shortcut(
     Run candidate BFS; return first candidate with dx sign condition, plus all candidates found.
     """
     found: List[TrackState] = []
-    starts = _start_edges(surface)
+    starts = _start_edges(surface, allow_bottom=not require_dy_nonzero)
     for start_idx, start_edge in enumerate(starts, start=1):
         st0 = TrackState.initialize(surface, start_edge=start_edge)
         if st0 is None:
@@ -458,9 +468,13 @@ def _candidate_or_dx_shortcut(
             st = q.popleft()
             expanded += 1
             if progress and (expanded == 1 or expanded % max(progress_interval, 1) == 0):
+                width = 24
+                frac = min(expanded / max_nodes, 1.0) if max_nodes else 0.0
+                filled = int(width * frac)
+                bar = "#" * filled + "-" * (width - filled)
                 msg = (
                     f"start {start_idx}/{len(starts)} "
-                    f"expanded {expanded}/{max_nodes} "
+                    f"[{bar}] {expanded}/{max_nodes} "
                     f"queue {len(q)} seen {len(seen)}"
                 )
                 sys.stdout.write("\r" + msg)
@@ -498,15 +512,22 @@ def _candidate_or_dx_shortcut(
                 if ok:
                     found.append(st)
                     if _dx_all_pos_or_all_neg(st):
+                        if progress:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
                         return st, found
                     if debug:
                         print(f"Candidate found. Total: {len(found)}")
                     if len(found) >= max_candidates:
+                        if progress:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
                         return None, found
 
             moves = st.moves(
                 multiple_interior_edge_crossings=multiple_interior_edge_crossings,
                 one_dir_only=False,
+                dominant_dir_only=dominant_dir_only,
                 max_ports_per_edge=max_ports_per_edge,
                 debug_counts=debug_counts,
             )
@@ -535,6 +556,7 @@ def collect_candidate_states(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    dominant_dir_only: bool = False,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
     trace_steps: bool = False,
@@ -547,7 +569,7 @@ def collect_candidate_states(
     Collect candidate TrackStates under the candidate constraints.
     """
     found: List[TrackState] = []
-    starts = _start_edges(surface)
+    starts = _start_edges(surface, allow_bottom=not require_dy_nonzero)
     for start_idx, start_edge in enumerate(starts, start=1):
         st0 = TrackState.initialize(surface, start_edge=start_edge)
         if st0 is None:
@@ -623,6 +645,7 @@ def collect_candidate_states(
             moves = st.moves(
                 multiple_interior_edge_crossings=multiple_interior_edge_crossings,
                 one_dir_only=False,
+                dominant_dir_only=dominant_dir_only,
                 max_ports_per_edge=max_ports_per_edge,
                 debug_counts=debug_counts,
             )
@@ -849,6 +872,7 @@ def search_shortcut_or_complete_set(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
     progress: bool = False,
@@ -869,6 +893,7 @@ def search_shortcut_or_complete_set(
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
+        dominant_dir_only=dominant_dir_only,
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
@@ -903,6 +928,7 @@ def search_shortcut_or_complete_set_with_candidates(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
@@ -924,6 +950,7 @@ def search_shortcut_or_complete_set_with_candidates(
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
+        dominant_dir_only=dominant_dir_only,
         debug=debug,
         debug_counts=debug_counts,
         progress=progress,
@@ -963,7 +990,7 @@ def diagnose_simple_shortcut(
         return "candidate fails simple shortcut constraints"
 
     target_key = _state_key(candidate)
-    for start_edge in _start_edges(surface):
+    for start_edge in _start_edges(surface, allow_bottom=False):
         st0 = TrackState.initialize(surface, start_edge=start_edge)
         if st0 is None:
             continue
