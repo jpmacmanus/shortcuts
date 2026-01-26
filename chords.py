@@ -60,13 +60,22 @@ def boundary_cyclic_order(square: Square) -> List[BoundaryPoint]:
     """
     order: List[BoundaryPoint] = []
 
-    for p in square.top.ports():
+    def _ordered_ports(side: Side, edge) -> Iterable[Port]:
+        ports = list(edge.ports())
+        base = getattr(edge, "base_side", None)
+        if base is None:
+            return ports
+        if base != side.value:
+            return list(reversed(ports))
+        return ports
+
+    for p in _ordered_ports(Side.TOP, square.top):
         order.append(BoundaryPoint(Side.TOP, p))
-    for p in square.left.ports():
+    for p in _ordered_ports(Side.LEFT, square.left):
         order.append(BoundaryPoint(Side.LEFT, p))
-    for p in square.bottom.ports():
+    for p in _ordered_ports(Side.BOTTOM, square.bottom):
         order.append(BoundaryPoint(Side.BOTTOM, p))
-    for p in square.right.ports():
+    for p in _ordered_ports(Side.RIGHT, square.right):
         order.append(BoundaryPoint(Side.RIGHT, p))
 
     return order

@@ -43,7 +43,12 @@ class Square:
     @classmethod
     def empty(cls) -> "Square":
         """Construct a square with four empty edges."""
-        return cls(top=Edge(), right=Edge(), bottom=Edge(), left=Edge())
+        return cls(
+            top=Edge(base_side=Side.TOP.value),
+            right=Edge(base_side=Side.RIGHT.value),
+            bottom=Edge(base_side=Side.BOTTOM.value),
+            left=Edge(base_side=Side.LEFT.value),
+        )
 
     def edge(self, side: Side) -> Edge:
         """Return the edge for a given side."""

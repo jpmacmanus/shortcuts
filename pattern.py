@@ -234,8 +234,11 @@ class Pattern:
             for p, x in zip(top_ports, xs):
                 port_positions[(Side.TOP, p)] = (x, 0)
 
-            # LEFT: top -> bottom
+            # LEFT: top -> bottom (respect shared-edge orientation)
             left_ports = list(diagram.square.left.ports())
+            base = getattr(diagram.square.left, "base_side", None)
+            if base is not None and base != Side.LEFT.value:
+                left_ports = list(reversed(left_ports))
             ys = _positions_along(inner_h, len(left_ports), padding)
             for p, y in zip(left_ports, ys):
                 port_positions[(Side.LEFT, p)] = (0, y)
@@ -246,8 +249,11 @@ class Pattern:
             for p, x in zip(bottom_ports, xs):
                 port_positions[(Side.BOTTOM, p)] = (x, height - 1)
 
-            # RIGHT: bottom -> top (preserve edge orientation; aligns interior pair reversal)
+            # RIGHT: bottom -> top (respect shared-edge orientation)
             right_ports = list(diagram.square.right.ports())
+            base = getattr(diagram.square.right, "base_side", None)
+            if base is not None and base != Side.RIGHT.value:
+                right_ports = list(reversed(right_ports))
             ys = _positions_along(inner_h, len(right_ports), padding)
             ys = list(reversed(ys))
             for p, y in zip(right_ports, ys):

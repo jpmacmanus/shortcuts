@@ -311,16 +311,22 @@ class TrackState:
                 if len(ports) >= 1:
                     continue
             # Try all insertion positions along the edge.
+            if self.surface.is_interior_edge(e_ref):
+                ports_local = self.surface._geom_order_ports(side, ports)
+            else:
+                ports_local = ports
             insertion_choices: list[tuple[Port | None, Port | None]] = []
-            if not ports:
+            if not ports_local:
                 insertion_choices.append((None, None))
             else:
-                insertion_choices.append((None, ports[0]))  # before first
-                for i in range(len(ports) - 1):
-                    insertion_choices.append((ports[i], ports[i + 1]))
-                insertion_choices.append((ports[-1], None))  # after last
+                insertion_choices.append((None, ports_local[0]))  # before first
+                for i in range(len(ports_local) - 1):
+                    insertion_choices.append((ports_local[i], ports_local[i + 1]))
+                insertion_choices.append((ports_local[-1], None))  # after last
 
             for left, right in insertion_choices:
+                if self.surface.is_interior_edge(e_ref) and side == Side.RIGHT:
+                    left, right = right, left
                 nxt = self._next_state_with_new_port(
                     square_i,
                     bp,

@@ -37,8 +37,10 @@ class Edge:
     the edge from left to right (or any consistent direction you choose).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, base_side: Optional[str] = None) -> None:
         self._ports: List[Port] = []
+        # Optional side marker used to interpret shared-edge orientation.
+        self.base_side: Optional[str] = base_side
 
     def ports(self) -> Tuple[Port, ...]:
         """Return the ports in order as an immutable tuple."""

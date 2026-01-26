@@ -400,6 +400,25 @@ class _MarkedBase:
         combined.append(f"        {label_line_bottom}")
         return "\n".join(combined)
 
+    @staticmethod
+    def _geom_order_ports(side: Side, ports: List[Port]) -> List[Port]:
+        """
+        Return ports in geometric top-to-bottom (LEFT/RIGHT) or left-to-right (TOP/BOTTOM) order.
+        Ports are stored in edge direction order.
+        """
+        if side in (Side.TOP, Side.RIGHT):
+            return list(reversed(ports))
+        return list(ports)
+
+    @staticmethod
+    def _geom_insert_index(side: Side, ports: List[Port], idx_geo: int) -> int:
+        """
+        Convert a geometric-order insertion index into list-order index.
+        """
+        if side in (Side.TOP, Side.RIGHT):
+            return len(ports) - idx_geo
+        return idx_geo
+
 
 @dataclass
 class MarkedStrip(_MarkedBase):
@@ -464,7 +483,11 @@ class MarkedStrip(_MarkedBase):
 
     def _relabel_edge(self, e: EdgeRef) -> None:
         ports = list(self._edge_obj(e).ports())
-        for idx, p in enumerate(ports, start=1):
+        label_ports = ports
+        if self.is_interior_edge(e):
+            # Label interior edges in geometric order (top-to-bottom for LEFT/RIGHT).
+            label_ports = self._geom_order_ports(e.side, ports)
+        for idx, p in enumerate(label_ports, start=1):
             object.__setattr__(p, "label", f"{e.side.short()}{idx}")
 
     def _port_symbol_map(self) -> Dict[Port, str]:
@@ -500,8 +523,10 @@ class MarkedStrip(_MarkedBase):
                     sym = _next_symbol()
                     out[pa] = sym
                 continue
-            for idx, pa in enumerate(ports_a):
-                pb = ports_b[len(ports_b) - 1 - idx]
+            ports_a_geo = self._geom_order_ports(ea.side, ports_a)
+            ports_b_geo = self._geom_order_ports(eb.side, ports_b)
+            for idx, pa in enumerate(ports_a_geo):
+                pb = ports_b_geo[idx]
                 if pa in out or pb in out:
                     continue
                 sym = _next_symbol()
@@ -556,7 +581,10 @@ class MarkedStrip(_MarkedBase):
                 return None
             if edge_b is edge_a:
                 return ports_a[idx]
-            return ports_b[len(ports_b) - 1 - idx]
+            # Interior pairing: reverse the local list before indexing.
+            ports_a_rev = list(reversed(ports_a))
+            rev_idx = ports_a_rev.index(port)
+            return ports_b[rev_idx]
 
         if self.is_marked_edge(e):
             be = BoundaryEdge(e.side, e.i)
@@ -663,7 +691,15 @@ class MarkedStrip(_MarkedBase):
                 if len(ports_b) != len(ports_a):
                     edge_a.remove_port(new_a)
                     return None
-                idx_b = len(ports_b) - idx
+                ports_a_geo = self._geom_order_ports(e.side, ports_a)
+                ports_b_geo = self._geom_order_ports(e2.side, ports_b)
+                left_b = self.paired_port(e, left) if left is not None else None
+                right_b = self.paired_port(e, right) if right is not None else None
+                idx_geo = self._insert_index(ports_b_geo, left_b, right_b)
+                if idx_geo is None:
+                    edge_a.remove_port(new_a)
+                    return None
+                idx_b = self._geom_insert_index(e2.side, ports_b, idx_geo)
                 new_b = edge_b.add_port(label="new", index=idx_b)
             self._relabel_edge(e)
             self._relabel_edge(e2)
@@ -750,7 +786,11 @@ class MarkedAnnulus(_MarkedBase):
 
     def _relabel_edge(self, e: EdgeRef) -> None:
         ports = list(self._edge_obj(e).ports())
-        for idx, p in enumerate(ports, start=1):
+        label_ports = ports
+        if self.is_interior_edge(e):
+            # Label interior edges in geometric order (top-to-bottom for LEFT/RIGHT).
+            label_ports = self._geom_order_ports(e.side, ports)
+        for idx, p in enumerate(label_ports, start=1):
             object.__setattr__(p, "label", f"{e.side.short()}{idx}")
 
     def _port_symbol_map(self) -> Dict[Port, str]:
@@ -785,8 +825,10 @@ class MarkedAnnulus(_MarkedBase):
                     sym = _next_symbol()
                     out[pa] = sym
                 continue
-            for idx, pa in enumerate(ports_a):
-                pb = ports_b[len(ports_b) - 1 - idx]
+            ports_a_geo = self._geom_order_ports(ea.side, ports_a)
+            ports_b_geo = self._geom_order_ports(eb.side, ports_b)
+            for idx, pa in enumerate(ports_a_geo):
+                pb = ports_b_geo[idx]
                 if pa in out or pb in out:
                     continue
                 sym = _next_symbol()
@@ -841,7 +883,12 @@ class MarkedAnnulus(_MarkedBase):
                 return None
             if edge_b is edge_a:
                 return ports_a[idx]
-            return ports_b[len(ports_b) - 1 - idx]
+            ports_a_geo = self._geom_order_ports(e.side, ports_a)
+            ports_b_geo = self._geom_order_ports(e2.side, ports_b)
+            if port not in ports_a_geo:
+                return None
+            geo_idx = ports_a_geo.index(port)
+            return ports_b_geo[geo_idx]
 
         if self.is_marked_edge(e):
             be = BoundaryEdge(e.side, e.i)
@@ -942,7 +989,32 @@ class MarkedAnnulus(_MarkedBase):
                 if len(ports_b) != len(ports_a):
                     edge_a.remove_port(new_a)
                     return None
-                idx_b = len(ports_b) - idx
+                # Match paired_port's list-reversal convention.
+                if left is None and right is None:
+                    idx_b = len(ports_b) - idx
+                else:
+                    if left is not None:
+                        li = ports_a.index(left)
+                        li_b = len(ports_b) - 1 - li
+                    else:
+                        li_b = None
+                    if right is not None:
+                        ri = ports_a.index(right)
+                        ri_b = len(ports_b) - 1 - ri
+                    else:
+                        ri_b = None
+                    if li_b is not None and ri_b is not None:
+                        if ri_b != li_b + 1:
+                            edge_a.remove_port(new_a)
+                            return None
+                        idx_b = ri_b
+                    elif li_b is not None:
+                        idx_b = li_b + 1
+                    else:
+                        idx_b = ri_b
+                if idx_b is None:
+                    edge_a.remove_port(new_a)
+                    return None
                 new_b = edge_b.add_port(label="new", index=idx_b)
             self._relabel_edge(e)
             self._relabel_edge(e2)
