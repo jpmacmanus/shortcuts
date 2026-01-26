@@ -34,31 +34,31 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-SIGNATURE = "I R V H I"  # Klein signature to be searched over.
+SIGNATURE = "I R I"  # Klein signature to be searched over.
 SURFACE = "annulus"        # "annulus" or "strip"
-DIRECTED_MODE = True      # make ports directed, to model the 'small splittings' case.
+DIRECTED_MODE = False      # make ports directed, to model the 'small splittings' case.
                            # interior edges in the strip/directed case are not directed.
 
 # Generation / symmetry controls
 UNIQUE = True               # skips surfaces which differ by a symmetry.
-EXCLUDE_ADJACENT_I = True   # skip cases which have trivial solutions due to adjacent I squares.
+EXCLUDE_ADJACENT_I = False   # skip cases which have trivial solutions due to adjacent I squares.
                             # ignored when DIRECTED_MODE=True.
 PREFIX_PRUNING = True       # start search on smaller prefix cases and build up to desired case.
 START_PREFIX_LENGTH = 2     # only used when PREFIX_PRUNING=True
 
 # Acceptance constraints
 REQUIRE_DY_NONZERO = True        # only accept tracks with dy != 0
-REQUIRE_DX_INFEASIBLE = True     # require dx != 0:
+REQUIRE_DX_INFEASIBLE = False     # require dx != 0:
                                  #      when raised, will sometimes return multiple candidates 
                                  #      to account for extra unmarked squares.
                                  #      at least one of these candidates is guaranteed to work for 
                                  #      any given assignment of weights.
 REQUIRE_EVEN_TURNING = True      # only accept tracks with an even number of turns.
 REQUIRE_EVEN_OR_PAIRS = True     # only accept orientable tracks (no Mobius band neighbourhood)
-DOMINANT_DIR_ONLY = False        # only move along dominant x-direction (free first move)
-LIMIT_INTERIOR_CROSSINGS = True  # when True, cap interior crossings to one per edge
-REJECT_ALL_INTERIOR_USED = True  # reject solutions that use every interior edge
-LONGCUT_MODE = False             # require all interior edges used, and some used > once
+DOMINANT_DIR_ONLY = True        # only move along dominant x-direction (free first move)
+LIMIT_INTERIOR_CROSSINGS = False  # when True, cap interior crossings to one per edge
+REJECT_ALL_INTERIOR_USED = False  # reject solutions that use every interior edge
+LONGCUT_MODE = True             # require all interior edges used, and some used > once
 
 # BFS bounds and minimization parameters
 MAX_NODES = 5000

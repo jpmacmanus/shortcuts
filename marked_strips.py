@@ -257,6 +257,8 @@ class _MarkedBase:
 
         inner_w = width - 2
         inner_h = height - 2
+        pad_h = padding
+        pad_v = max(0, padding - 1)
 
         def _positions_along(length: int, count: int, pad: int) -> List[int]:
             if count <= 0:
@@ -271,7 +273,7 @@ class _MarkedBase:
 
         # TOP: right -> left
         top_ports = list(square.top.ports())
-        xs = _positions_along(inner_w, len(top_ports), padding)
+        xs = _positions_along(inner_w, len(top_ports), pad_h)
         xs = list(reversed(xs))
         for p, x in zip(top_ports, xs):
             grid[0][x] = port_symbols.get(p, "o")[:1]
@@ -282,7 +284,7 @@ class _MarkedBase:
 
         # LEFT: top -> bottom
         left_ports = list(square.left.ports())
-        ys = _positions_along(inner_h, len(left_ports), padding)
+        ys = _positions_along(inner_h, len(left_ports), pad_v)
         for p, y in zip(left_ports, ys):
             if Side.LEFT in interior_sides:
                 if show_interior_labels:
@@ -292,13 +294,13 @@ class _MarkedBase:
 
         # BOTTOM: left -> right
         bottom_ports = list(square.bottom.ports())
-        xs = _positions_along(inner_w, len(bottom_ports), padding)
+        xs = _positions_along(inner_w, len(bottom_ports), pad_h)
         for p, x in zip(bottom_ports, xs):
             grid[height - 1][x] = port_symbols.get(p, "o")[:1]
 
         # RIGHT: typically bottom -> top, but use top -> bottom to align shared edges
         right_ports = list(square.right.ports())
-        ys = _positions_along(inner_h, len(right_ports), padding)
+        ys = _positions_along(inner_h, len(right_ports), pad_v)
         if not right_top_to_bottom:
             ys = list(reversed(ys))
         for p, y in zip(right_ports, ys):

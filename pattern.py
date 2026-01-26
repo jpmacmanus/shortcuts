@@ -224,12 +224,14 @@ class Pattern:
 
             inner_w = width - 2
             inner_h = height - 2
+            pad_h = padding
+            pad_v = max(0, padding - 1)
 
             port_positions: Dict[Tuple[Side, object], Tuple[int, int]] = {}
 
             # TOP: right -> left
             top_ports = list(diagram.square.top.ports())
-            xs = _positions_along(inner_w, len(top_ports), padding)
+            xs = _positions_along(inner_w, len(top_ports), pad_h)
             xs = list(reversed(xs))
             for p, x in zip(top_ports, xs):
                 port_positions[(Side.TOP, p)] = (x, 0)
@@ -239,13 +241,13 @@ class Pattern:
             base = getattr(diagram.square.left, "base_side", None)
             if base is not None and base != Side.LEFT.value:
                 left_ports = list(reversed(left_ports))
-            ys = _positions_along(inner_h, len(left_ports), padding)
+            ys = _positions_along(inner_h, len(left_ports), pad_v)
             for p, y in zip(left_ports, ys):
                 port_positions[(Side.LEFT, p)] = (0, y)
 
             # BOTTOM: left -> right
             bottom_ports = list(diagram.square.bottom.ports())
-            xs = _positions_along(inner_w, len(bottom_ports), padding)
+            xs = _positions_along(inner_w, len(bottom_ports), pad_h)
             for p, x in zip(bottom_ports, xs):
                 port_positions[(Side.BOTTOM, p)] = (x, height - 1)
 
@@ -254,7 +256,7 @@ class Pattern:
             base = getattr(diagram.square.right, "base_side", None)
             if base is not None and base != Side.RIGHT.value:
                 right_ports = list(reversed(right_ports))
-            ys = _positions_along(inner_h, len(right_ports), padding)
+            ys = _positions_along(inner_h, len(right_ports), pad_v)
             ys = list(reversed(ys))
             for p, y in zip(right_ports, ys):
                 port_positions[(Side.RIGHT, p)] = (width - 1, y)
