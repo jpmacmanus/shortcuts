@@ -242,6 +242,29 @@ def _uses_all_interior_edges(st: TrackState) -> bool:
     return used_interior.issuperset(all_interior)
 
 
+def _count_interior_edges_with_multiple_ports(st: TrackState) -> int:
+    count = 0
+    seen: set[int] = set()
+    for e in st.surface.all_edge_refs():
+        if not st.surface.is_interior_edge(e):
+            continue
+        edge_obj = st.surface.square(e.i).edge(e.side)
+        edge_id = id(edge_obj)
+        if edge_id in seen:
+            continue
+        seen.add(edge_id)
+        if len(list(edge_obj.ports())) > 1:
+            count += 1
+    return count
+
+
+def _has_self_port_chord(st: TrackState) -> bool:
+    for d in st.diagrams.values():
+        for ch in d.chords:
+            if ch.a.port is ch.b.port:
+                return True
+    return False
+
 def _simple_constraints_ok(st: TrackState) -> bool:
     if not st.is_closed():
         return False
@@ -259,6 +282,92 @@ def _simple_constraints_ok(st: TrackState) -> bool:
     if not _dx_all_pos_or_all_neg(st):
         return False
     return True
+
+
+def trace_shortcut_path(
+    surface: MarkedSurface,
+    *,
+    max_nodes: int = 50_000,
+    max_candidates: int = 1_000,
+    max_ports_per_edge: int | None = 5,
+    multiple_interior_edge_crossings: bool = True,
+    require_even_turning: bool = True,
+    require_even_or_pairs: bool = True,
+    require_dy_nonzero: bool = True,
+    reject_all_interior_used: bool = False,
+    dominant_dir_only: bool = False,
+    require_all_interior_used: bool = False,
+    require_some_interior_multiple: bool = False,
+    debug_edge_pairing: bool = False,
+) -> list[TrackState] | None:
+    """
+    Return the path of TrackStates leading to the first accepted shortcut.
+    """
+    starts = _start_edges(surface, allow_bottom=not require_dy_nonzero)
+    for start_edge in starts:
+        st0 = TrackState.initialize(surface, start_edge=start_edge)
+        if st0 is None:
+            continue
+
+        q: Deque[TrackState] = deque([st0])
+        seen: Set[Tuple] = set()
+        parents: Dict[Tuple, Tuple[Optional[Tuple], TrackState]] = {}
+
+        expanded = 0
+        while q:
+            st = q.popleft()
+            expanded += 1
+            if expanded > max_nodes:
+                break
+
+            key = _state_key(st)
+            if key in seen:
+                continue
+            seen.add(key)
+            if key not in parents:
+                parents[key] = (None, st)
+
+            pat = Pattern(surface=st.surface, diagrams=st.diagrams)
+            if pat.validate() and _has_any_chord(st) and st.is_closed():
+                ok = True
+                if require_even_turning:
+                    ok = ok and (st.turn_count % 2 == 0)
+                if require_even_or_pairs:
+                    ok = ok and (st.or_pair_count % 2 == 0)
+                if require_dy_nonzero:
+                    ok = ok and (st.dy != 0)
+                if reject_all_interior_used:
+                    ok = ok and (not _uses_all_interior_edges(st))
+                if require_all_interior_used:
+                    ok = ok and _uses_all_interior_edges(st)
+                if require_some_interior_multiple:
+                    ok = ok and (_count_interior_edges_with_multiple_ports(st) > 0)
+                if _has_self_port_chord(st):
+                    ok = False
+                if ok and _dx_all_pos_or_all_neg(st):
+                    path_states: list[TrackState] = []
+                    cur_key: Optional[Tuple] = key
+                    while cur_key is not None:
+                        prev_key, cur_state = parents[cur_key]
+                        path_states.append(cur_state)
+                        cur_key = prev_key
+                    path_states.reverse()
+                    return path_states
+
+            moves = st.moves(
+                multiple_interior_edge_crossings=multiple_interior_edge_crossings,
+                one_dir_only=False,
+                dominant_dir_only=dominant_dir_only,
+                max_ports_per_edge=max_ports_per_edge,
+                debug_edge_pairing=debug_edge_pairing,
+            )
+            for nxt in moves:
+                nxt_key = _state_key(nxt)
+                if nxt_key not in parents:
+                    parents[nxt_key] = (key, nxt)
+                q.append(nxt)
+
+    return None
 
 
 def simple_shortcut_bfs(
@@ -433,6 +542,8 @@ def _candidate_or_dx_shortcut(
     require_dy_nonzero: bool,
     reject_all_interior_used: bool,
     dominant_dir_only: bool = False,
+    require_all_interior_used: bool = False,
+    require_some_interior_multiple: bool = False,
     debug: bool,
     debug_counts: Optional[dict] = None,
     progress: bool = False,
@@ -509,6 +620,12 @@ def _candidate_or_dx_shortcut(
                     ok = ok and (st.dy != 0)
                 if reject_all_interior_used:
                     ok = ok and (not _uses_all_interior_edges(st))
+                if require_all_interior_used:
+                    ok = ok and _uses_all_interior_edges(st)
+                if require_some_interior_multiple:
+                    ok = ok and (_count_interior_edges_with_multiple_ports(st) > 0)
+                if _has_self_port_chord(st):
+                    ok = False
                 if ok:
                     found.append(st)
                     if _dx_all_pos_or_all_neg(st):
@@ -873,6 +990,8 @@ def search_shortcut_or_complete_set(
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
     dominant_dir_only: bool = False,
+    require_all_interior_used: bool = False,
+    require_some_interior_multiple: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
     progress: bool = False,
@@ -894,6 +1013,8 @@ def search_shortcut_or_complete_set(
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
         dominant_dir_only=dominant_dir_only,
+        require_all_interior_used=require_all_interior_used,
+        require_some_interior_multiple=require_some_interior_multiple,
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
@@ -929,6 +1050,8 @@ def search_shortcut_or_complete_set_with_candidates(
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
     dominant_dir_only: bool = False,
+    require_all_interior_used: bool = False,
+    require_some_interior_multiple: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
@@ -951,6 +1074,8 @@ def search_shortcut_or_complete_set_with_candidates(
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
         dominant_dir_only=dominant_dir_only,
+        require_all_interior_used=require_all_interior_used,
+        require_some_interior_multiple=require_some_interior_multiple,
         debug=debug,
         debug_counts=debug_counts,
         progress=progress,

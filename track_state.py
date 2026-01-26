@@ -216,6 +216,7 @@ class TrackState:
         dominant_dir_only: bool = False,
         max_ports_per_edge: int | None = None,
         debug_counts: Optional[dict] = None,
+        debug_edge_pairing: bool = False,
     ) -> List["TrackState"]:
         """
         Return a list of TrackStates reachable by adding one chord from the cursor.
@@ -279,6 +280,7 @@ class TrackState:
                         side,
                         p,
                         dominant_dir_only=dominant_dir_only,
+                        debug_edge_pairing=debug_edge_pairing,
                     )
                     if nxt is not None:
                         out.append(nxt)
@@ -311,23 +313,38 @@ class TrackState:
                 if len(ports) >= 1:
                     continue
             # Try all insertion positions along the edge.
-            insertion_choices: list[tuple[Port | None, Port | None]] = []
-            if not ports:
-                insertion_choices.append((None, None))
+            reversed_local = (
+                self.surface.is_interior_edge(e_ref)
+                and getattr(edge, "base_side", None) is not None
+                and getattr(edge, "base_side", None) != side.value
+            )
+            ports_local = list(reversed(ports)) if reversed_local else ports
+            if not ports_local:
+                slots = [(None, None)]
             else:
-                insertion_choices.append((None, ports[0]))  # before first
-                for i in range(len(ports) - 1):
-                    insertion_choices.append((ports[i], ports[i + 1]))
-                insertion_choices.append((ports[-1], None))  # after last
+                slots = [(None, ports_local[0])]
+                for i in range(len(ports_local) - 1):
+                    slots.append((ports_local[i], ports_local[i + 1]))
+                slots.append((ports_local[-1], None))
 
-            for left, right in insertion_choices:
+            for left, right in slots:
+                # add_port_between expects left/right in the edge's stored order.
+                left_for_edge, right_for_edge = (
+                    (right, left) if reversed_local else (left, right)
+                )
+                if debug_edge_pairing and self.surface.is_interior_edge(e_ref):
+                    print(
+                        f"[slot] {side.name}@{square_i} base={getattr(edge, 'base_side', None)} "
+                        f"rev={reversed_local} left={left_for_edge} right={right_for_edge}"
+                    )
                 nxt = self._next_state_with_new_port(
                     square_i,
                     bp,
                     e_ref,
-                    left=left,
-                    right=right,
+                    left=left_for_edge,
+                    right=right_for_edge,
                     dominant_dir_only=dominant_dir_only,
+                    debug_edge_pairing=debug_edge_pairing,
                     debug_counts=debug_counts,
                 )
                 if nxt is not None:
@@ -414,6 +431,7 @@ class TrackState:
         port: Port,
         *,
         dominant_dir_only: bool = False,
+        debug_edge_pairing: bool = False,
     ) -> "TrackState | None":
         surface2, diagrams2, bp2, map_port = self._clone_with_mapped_cursor()
         port2 = map_port(side, square_i, port)
@@ -425,6 +443,25 @@ class TrackState:
         if paired is None:
             return None
         e2, p2 = paired
+        if debug_edge_pairing and surface2.is_interior_edge(EdgeRef(side, square_i)):
+            edge_a = surface2.square(square_i).edge(side)
+            edge_b = surface2.square(e2.i).edge(e2.side)
+            ports_a = list(edge_a.ports())
+            ports_b = list(edge_b.ports())
+            try:
+                idx_a = ports_a.index(port2)
+            except ValueError:
+                idx_a = -1
+            try:
+                idx_b = ports_b.index(p2)
+            except ValueError:
+                idx_b = -1
+            print(
+                f"[pair] interior {side.name}@{square_i} -> {e2.side.name}@{e2.i} "
+                f"idx {idx_a}->{idx_b} "
+                f"ports_a={[(p.label, id(p)) for p in ports_a]} "
+                f"ports_b={[(p.label, id(p)) for p in ports_b]}"
+            )
         cursor2 = (e2.i, BoundaryPoint(e2.side, p2))
         return self._with_updated(
             surface2,
@@ -444,6 +481,7 @@ class TrackState:
         left: Port | None = None,
         right: Port | None = None,
         dominant_dir_only: bool = False,
+        debug_edge_pairing: bool = False,
         debug_counts: Optional[dict] = None,
     ) -> "TrackState | None":
         surface2, diagrams2, bp2, map_port = self._clone_with_mapped_cursor()
@@ -457,25 +495,65 @@ class TrackState:
                     debug_counts.get("interior_add_fail_add_port", 0) + 1
                 )
             return None
-        new_port, _paired_port = new_pair
-
+        new_port, paired_port = new_pair
         chord = Chord(BoundaryPoint(bp2.side, bp2.port), BoundaryPoint(e_ref.side, new_port))
         if not diagrams2[square_i].add_chord(chord):
             if debug_counts is not None and is_interior:
                 debug_counts["interior_add_fail_add_chord"] = (
                     debug_counts.get("interior_add_fail_add_chord", 0) + 1
                 )
+            if debug_edge_pairing and is_interior:
+                print(
+                    f"[reject] {e_ref.side.name}@{e_ref.i} "
+                    f"left={left2} right={right2} new_port={new_port}"
+                )
             return None
+        if debug_edge_pairing and is_interior:
+            edge_after = surface2.square(e_ref.i).edge(e_ref.side)
+            ports_after = list(edge_after.ports())
+            print(
+                f"[newchord] {e_ref.side.name}@{e_ref.i} "
+                f"left={left2} right={right2} "
+                f"new_port={new_port} "
+                f"ports={[ (p.label, id(p)) for p in ports_after ]}"
+            )
 
-        paired = surface2.paired_boundary_point(e_ref, new_port)
-        if paired is None:
+        # Use the explicit paired port from add_port_between to avoid
+        # any mismatch when interior order updates after insertion.
+        if surface2.is_interior_edge(e_ref):
+            e2 = surface2._interior_pair(e_ref)
+        elif surface2.is_marked_edge(e_ref):
+            be = BoundaryEdge(e_ref.side, e_ref.i)
+            other, _is_rev = surface2.pair_info(be)
+            e2 = EdgeRef(other.side, other.i)
+        else:
+            e2 = None
+        if e2 is None:
             if debug_counts is not None and is_interior:
                 debug_counts["interior_add_fail_pair"] = (
                     debug_counts.get("interior_add_fail_pair", 0) + 1
                 )
             return None
-        e2, p2 = paired
-        cursor2 = (e2.i, BoundaryPoint(e2.side, p2))
+        if debug_edge_pairing and surface2.is_interior_edge(e_ref):
+            edge_a = surface2.square(e_ref.i).edge(e_ref.side)
+            edge_b = surface2.square(e2.i).edge(e2.side)
+            ports_a = list(edge_a.ports())
+            ports_b = list(edge_b.ports())
+            try:
+                idx_a = ports_a.index(new_port)
+            except ValueError:
+                idx_a = -1
+            try:
+                idx_b = ports_b.index(paired_port)
+            except ValueError:
+                idx_b = -1
+            print(
+                f"[insert] interior {e_ref.side.name}@{e_ref.i} -> {e2.side.name}@{e2.i} "
+                f"idx {idx_a}->{idx_b} "
+                f"ports_a={[(p.label, id(p)) for p in ports_a]} "
+                f"ports_b={[(p.label, id(p)) for p in ports_b]}"
+            )
+        cursor2 = (e2.i, BoundaryPoint(e2.side, paired_port))
         if debug_counts is not None and is_interior:
             debug_counts["interior_add_success"] = (
                 debug_counts.get("interior_add_success", 0) + 1

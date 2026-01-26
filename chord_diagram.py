@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Set, Tuple
 
-from chords import BoundaryPoint, Chord, chords_cross_in_square
+from chords import BoundaryPoint, Chord, boundary_cyclic_order, chords_cross_in_square
 from edge import Port
 from square import Side, Square
 
@@ -193,27 +193,24 @@ class ChordDiagram:
 
         port_positions: Dict[Tuple[Side, object], Tuple[int, int]] = {}
 
-        # TOP: right -> left
-        top_ports = list(self.square.top.ports())
+        order = boundary_cyclic_order(self.square)
+        top_ports = [bp.port for bp in order if bp.side == Side.TOP]
         xs = _positions_along(inner_w, len(top_ports), padding)
         xs = list(reversed(xs))
         for p, x in zip(top_ports, xs):
             port_positions[(Side.TOP, p)] = (x, 0)
 
-        # LEFT: top -> bottom
-        left_ports = list(self.square.left.ports())
+        left_ports = [bp.port for bp in order if bp.side == Side.LEFT]
         ys = _positions_along(inner_h, len(left_ports), padding)
         for p, y in zip(left_ports, ys):
             port_positions[(Side.LEFT, p)] = (0, y)
 
-        # BOTTOM: left -> right
-        bottom_ports = list(self.square.bottom.ports())
+        bottom_ports = [bp.port for bp in order if bp.side == Side.BOTTOM]
         xs = _positions_along(inner_w, len(bottom_ports), padding)
         for p, x in zip(bottom_ports, xs):
             port_positions[(Side.BOTTOM, p)] = (x, height - 1)
 
-        # RIGHT: bottom -> top
-        right_ports = list(self.square.right.ports())
+        right_ports = [bp.port for bp in order if bp.side == Side.RIGHT]
         ys = _positions_along(inner_h, len(right_ports), padding)
         ys = list(reversed(ys))
         for p, y in zip(right_ports, ys):

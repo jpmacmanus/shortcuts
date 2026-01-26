@@ -542,6 +542,7 @@ class MarkedStrip(_MarkedBase):
                 return None
             if edge_b is edge_a:
                 return ports_a[idx]
+            # Interior pairing reverses order across the shared edge.
             return ports_b[len(ports_b) - 1 - idx]
 
         if self.is_marked_edge(e):
@@ -635,21 +636,25 @@ class MarkedStrip(_MarkedBase):
         if idx is None:
             return None
 
-        new_a = edge_a.add_port(label="new", index=idx)
-
         if self.is_interior_edge(e):
             e2 = self._interior_pair(e)
             if e2 is None:
                 return None
             edge_b = self._edge_obj(e2)
             if edge_b is edge_a:
+                new_a = edge_a.add_port(label="new", index=idx)
                 new_b = new_a
             else:
                 ports_b = list(edge_b.ports())
                 if len(ports_b) != len(ports_a):
-                    edge_a.remove_port(new_a)
                     return None
-                idx_b = len(ports_b) - idx
+                # Compute paired neighbors using the current pairing map.
+                left_b = self.paired_port(e, left) if left is not None else None
+                right_b = self.paired_port(e, right) if right is not None else None
+                idx_b = self._insert_index(ports_b, left_b, right_b)
+                if idx_b is None:
+                    return None
+                new_a = edge_a.add_port(label="new", index=idx)
                 new_b = edge_b.add_port(label="new", index=idx_b)
             self._relabel_edge(e)
             self._relabel_edge(e2)
@@ -662,9 +667,9 @@ class MarkedStrip(_MarkedBase):
         edge_b = self._edge_obj(e2)
         ports_b = list(edge_b.ports())
         if len(ports_b) != len(ports_a):
-            edge_a.remove_port(new_a)
             return None
 
+        new_a = edge_a.add_port(label="new", index=idx)
         reversed_order = self._pair_reversed_marked(be, other, is_rev)
         idx_b = (len(ports_b) - idx) if reversed_order else idx
         new_b = edge_b.add_port(label="new", index=idx_b)
@@ -827,6 +832,7 @@ class MarkedAnnulus(_MarkedBase):
                 return None
             if edge_b is edge_a:
                 return ports_a[idx]
+            # Interior pairing reverses order across the shared edge.
             return ports_b[len(ports_b) - 1 - idx]
 
         if self.is_marked_edge(e):
@@ -914,21 +920,25 @@ class MarkedAnnulus(_MarkedBase):
         if idx is None:
             return None
 
-        new_a = edge_a.add_port(label="new", index=idx)
-
         if self.is_interior_edge(e):
             e2 = self._interior_pair(e)
             if e2 is None:
                 return None
             edge_b = self._edge_obj(e2)
             if edge_b is edge_a:
+                new_a = edge_a.add_port(label="new", index=idx)
                 new_b = new_a
             else:
                 ports_b = list(edge_b.ports())
                 if len(ports_b) != len(ports_a):
-                    edge_a.remove_port(new_a)
                     return None
-                idx_b = len(ports_b) - idx
+                # Compute paired neighbors using the current pairing map.
+                left_b = self.paired_port(e, left) if left is not None else None
+                right_b = self.paired_port(e, right) if right is not None else None
+                idx_b = self._insert_index(ports_b, left_b, right_b)
+                if idx_b is None:
+                    return None
+                new_a = edge_a.add_port(label="new", index=idx)
                 new_b = edge_b.add_port(label="new", index=idx_b)
             self._relabel_edge(e)
             self._relabel_edge(e2)
@@ -941,9 +951,9 @@ class MarkedAnnulus(_MarkedBase):
         edge_b = self._edge_obj(e2)
         ports_b = list(edge_b.ports())
         if len(ports_b) != len(ports_a):
-            edge_a.remove_port(new_a)
             return None
 
+        new_a = edge_a.add_port(label="new", index=idx)
         reversed_order = self._pair_reversed_marked(be, other, is_rev)
         idx_b = (len(ports_b) - idx) if reversed_order else idx
         new_b = edge_b.add_port(label="new", index=idx_b)
