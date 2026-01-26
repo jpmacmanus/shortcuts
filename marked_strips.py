@@ -16,6 +16,9 @@ from edge import Port
 from square import Side
 from strips import Annulus, SquareStrip
 
+# Debug render flag: show labels for interior-edge ports inside the square.
+DEBUG_INTERIOR_LABELS = False
+
 
 @dataclass(frozen=True, order=True)
 class BoundaryEdge:
@@ -187,6 +190,7 @@ class _MarkedBase:
         right_top_to_bottom: bool,
         edge_dir_lookup=None,
         square_index: int | None = None,
+        show_interior_labels: bool = False,
     ) -> List[str]:
         if width < 5 or height < 5:
             raise ValueError("width and height must be at least 5")
@@ -272,11 +276,17 @@ class _MarkedBase:
         for p, x in zip(top_ports, xs):
             grid[0][x] = port_symbols.get(p, "o")[:1]
 
+        def _label_char(port: Port) -> str:
+            label = getattr(port, "label", "")
+            return label[-1] if label else "o"
+
         # LEFT: top -> bottom
         left_ports = list(square.left.ports())
         ys = _positions_along(inner_h, len(left_ports), padding)
         for p, y in zip(left_ports, ys):
             if Side.LEFT in interior_sides:
+                if show_interior_labels:
+                    grid[y][1] = _label_char(p)
                 continue
             grid[y][0] = port_symbols.get(p, "o")[:1]
 
@@ -293,6 +303,8 @@ class _MarkedBase:
             ys = list(reversed(ys))
         for p, y in zip(right_ports, ys):
             if Side.RIGHT in interior_sides:
+                if show_interior_labels:
+                    grid[y][width - 2] = _label_char(p)
                 continue
             grid[y][width - 1] = port_symbols.get(p, "o")[:1]
 
@@ -320,6 +332,7 @@ class _MarkedBase:
         bottom_labels = [self._edge_label(self.edge(Side.BOTTOM, i), labels) for i in range(self.N)]
 
         port_symbols = self._port_symbol_map()
+        show_interior = DEBUG_INTERIOR_LABELS
 
         def _blank_if_none(label: str) -> str:
             return "" if label == "--" else label
@@ -373,6 +386,7 @@ class _MarkedBase:
                     right_top_to_bottom=right_top_to_bottom,
                     edge_dir_lookup=getattr(self, "edge_direction", None),
                     square_index=idx,
+                    show_interior_labels=show_interior,
                 )
             )
 

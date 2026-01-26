@@ -242,6 +242,22 @@ def _uses_all_interior_edges(st: TrackState) -> bool:
     return used_interior.issuperset(all_interior)
 
 
+def _has_interior_edge_multiple_uses(st: TrackState) -> bool:
+    """
+    Return True if some interior edge is used more than once by chord endpoints.
+    """
+    counts: Dict[int, int] = {}
+    for i in range(st.surface.N):
+        diagram = st.diagrams[i]
+        for ch in diagram.chords:
+            for bp in (ch.a, ch.b):
+                e = EdgeRef(bp.side, i)
+                if st.surface.is_interior_edge(e):
+                    edge_obj = st.surface.square(i).edge(bp.side)
+                    counts[id(edge_obj)] = counts.get(id(edge_obj), 0) + 1
+    return any(v > 1 for v in counts.values())
+
+
 def _simple_constraints_ok(st: TrackState) -> bool:
     if not st.is_closed():
         return False
@@ -432,6 +448,7 @@ def _candidate_or_dx_shortcut(
     require_even_or_pairs: bool,
     require_dy_nonzero: bool,
     reject_all_interior_used: bool,
+    longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     debug: bool,
     debug_counts: Optional[dict] = None,
@@ -441,6 +458,9 @@ def _candidate_or_dx_shortcut(
     trace_max_steps: int | None = None,
     trace_color: str = "",
     trace_reset: str = "",
+    trace_accepted: bool = False,
+    trace_accepted_max: int | None = None,
+    trace_accepted_color: str = "",
 ) -> tuple[TrackState | None, List[TrackState]]:
     """
     Run candidate BFS; return first candidate with dx sign condition, plus all candidates found.
@@ -451,6 +471,10 @@ def _candidate_or_dx_shortcut(
         st0 = TrackState.initialize(surface, start_edge=start_edge)
         if st0 is None:
             continue
+
+        parents: Dict[Tuple, Tuple[Optional[Tuple], TrackState]] = {}
+        if trace_accepted:
+            parents[_state_key(st0)] = (None, st0)
 
         if trace_steps:
             print(
@@ -509,12 +533,40 @@ def _candidate_or_dx_shortcut(
                     ok = ok and (st.dy != 0)
                 if reject_all_interior_used:
                     ok = ok and (not _uses_all_interior_edges(st))
+                if longcut_mode:
+                    ok = ok and _uses_all_interior_edges(st)
+                    ok = ok and _has_interior_edge_multiple_uses(st)
                 if ok:
                     found.append(st)
                     if _dx_all_pos_or_all_neg(st):
                         if progress:
                             sys.stdout.write("\n")
                             sys.stdout.flush()
+                        if trace_accepted:
+                            path_states: list[TrackState] = []
+                            cur_key: Optional[Tuple] = _state_key(st)
+                            while cur_key is not None and cur_key in parents:
+                                prev_key, cur_state = parents[cur_key]
+                                path_states.append(cur_state)
+                                cur_key = prev_key
+                            path_states.reverse()
+                            color = trace_accepted_color or trace_color
+                            print(
+                                f"{color}Pattern accepted. "
+                                f"Path length: {len(path_states)}{trace_reset}"
+                            )
+                            for i, st_path in enumerate(path_states, start=1):
+                                if trace_accepted_max is not None and i > trace_accepted_max:
+                                    print(f"{color}...{trace_reset}")
+                                    break
+                                sq_i, bp = st_path.cursor
+                                print(
+                                    f"{color}Step {i}: cursor={bp.side.name.lower()}@{sq_i} "
+                                    f"turns={st_path.turn_count} dy={st_path.dy} "
+                                    f"or_pairs={st_path.or_pair_count} dom_x={st_path.dominant_x_dir}{trace_reset}"
+                                )
+                                print(f"{color}{st_path.render()}{trace_reset}")
+                                print()
                         return st, found
                     if debug:
                         print(f"Candidate found. Total: {len(found)}")
@@ -536,6 +588,9 @@ def _candidate_or_dx_shortcut(
                 print(f"{trace_color}moves={len(moves)} total_generated={generated}{trace_reset}")
                 print()
             for nxt in moves:
+                nxt_key = _state_key(nxt)
+                if trace_accepted and nxt_key not in parents:
+                    parents[nxt_key] = (_state_key(st), nxt)
                 q.append(nxt)
 
         if progress:
@@ -556,6 +611,7 @@ def collect_candidate_states(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
@@ -631,6 +687,9 @@ def collect_candidate_states(
                     ok = ok and (st.dy != 0)
                 if reject_all_interior_used:
                     ok = ok and (not _uses_all_interior_edges(st))
+                if longcut_mode:
+                    ok = ok and _uses_all_interior_edges(st)
+                    ok = ok and _has_interior_edge_multiple_uses(st)
                 if ok:
                     found.append(st)
                     if debug:
@@ -872,6 +931,7 @@ def search_shortcut_or_complete_set(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
@@ -879,6 +939,10 @@ def search_shortcut_or_complete_set(
     progress_interval: int = 200,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
+    trace_accepted: bool = False,
+    trace_accepted_max: int | None = None,
+    trace_accepted_color: str = "",
+    trace_reset: str = "",
 ) -> TrackState | List[TrackState] | None:
     """
     Generic search with configurable constraints and optional completeness check.
@@ -893,12 +957,17 @@ def search_shortcut_or_complete_set(
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
+        longcut_mode=longcut_mode,
         dominant_dir_only=dominant_dir_only,
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
+        trace_accepted=trace_accepted,
+        trace_accepted_max=trace_accepted_max,
+        trace_accepted_color=trace_accepted_color,
+        trace_reset=trace_reset,
     )
     if shortcut is not None:
         return shortcut
@@ -928,6 +997,7 @@ def search_shortcut_or_complete_set_with_candidates(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
     debug: bool = False,
@@ -936,6 +1006,10 @@ def search_shortcut_or_complete_set_with_candidates(
     progress_interval: int = 200,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
+    trace_accepted: bool = False,
+    trace_accepted_max: int | None = None,
+    trace_accepted_color: str = "",
+    trace_reset: str = "",
 ) -> tuple[TrackState | List[TrackState] | None, List[TrackState]]:
     """
     Generic search with candidates returned for diagnostics.
@@ -950,6 +1024,7 @@ def search_shortcut_or_complete_set_with_candidates(
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
+        longcut_mode=longcut_mode,
         dominant_dir_only=dominant_dir_only,
         debug=debug,
         debug_counts=debug_counts,
@@ -957,6 +1032,10 @@ def search_shortcut_or_complete_set_with_candidates(
         progress_interval=progress_interval,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
+        trace_accepted=trace_accepted,
+        trace_accepted_max=trace_accepted_max,
+        trace_accepted_color=trace_accepted_color,
+        trace_reset=trace_reset,
     )
     if shortcut is not None:
         return shortcut, candidates

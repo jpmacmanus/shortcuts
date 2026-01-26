@@ -18,6 +18,9 @@ from square import Side
 
 MarkedSurface = Union[MarkedStrip, MarkedAnnulus]
 
+# Debug render flag: show labels for interior-edge ports inside the square.
+DEBUG_INTERIOR_LABELS = False
+
 
 def _used_points(diagram: ChordDiagram) -> Set[BoundaryPoint]:
     used: Set[BoundaryPoint] = set()
@@ -276,6 +279,17 @@ class Pattern:
                     if 0 < x < width - 1 and 0 < y < height - 1:
                         if grid[y][x] == " ":
                             grid[y][x] = "*"
+
+            if DEBUG_INTERIOR_LABELS:
+                for (side, port), (x, y) in port_positions.items():
+                    if not self.surface.is_interior_edge(EdgeRef(side, sq_index)):
+                        continue
+                    label = getattr(port, "label", "")
+                    ch = label[-1] if label else "o"
+                    if side == Side.LEFT:
+                        grid[y][1] = ch
+                    elif side == Side.RIGHT:
+                        grid[y][width - 2] = ch
 
             return ["".join(row) for row in grid]
 
