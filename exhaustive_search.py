@@ -34,15 +34,16 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-SIGNATURE = "I R I"  # Klein signature to be searched over.
+SIGNATURE = "I H V R I"  # Klein signature to be searched over.
 SURFACE = "annulus"        # "annulus" or "strip"
-DIRECTED_MODE = False      # make ports directed, to model the 'small splittings' case.
-                           # interior edges in the strip/directed case are not directed.
+# Directed edge modes (can be enabled independently).
+DIRECTED_MARKED = True    # vertical directions on marked TOP/BOTTOM edges
+DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus only)
 
 # Generation / symmetry controls
 UNIQUE = True               # skips surfaces which differ by a symmetry.
 EXCLUDE_ADJACENT_I = False   # skip cases which have trivial solutions due to adjacent I squares.
-                            # ignored when DIRECTED_MODE=True.
+                            # ignored when any directed mode is enabled.
 PREFIX_PRUNING = True       # start search on smaller prefix cases and build up to desired case.
 START_PREFIX_LENGTH = 2     # only used when PREFIX_PRUNING=True
 
@@ -54,11 +55,12 @@ REQUIRE_DX_INFEASIBLE = False     # require dx != 0:
                                  #      at least one of these candidates is guaranteed to work for 
                                  #      any given assignment of weights.
 REQUIRE_EVEN_TURNING = True      # only accept tracks with an even number of turns.
-REQUIRE_EVEN_OR_PAIRS = True     # only accept orientable tracks (no Mobius band neighbourhood)
-DOMINANT_DIR_ONLY = True        # only move along dominant x-direction (free first move)
+REQUIRE_EVEN_OR_PAIRS = False     # only accept orientable tracks (no Mobius band neighbourhood)
+DOMINANT_DIR_ONLY = False        # only move along dominant x-direction (free first move)
 LIMIT_INTERIOR_CROSSINGS = False  # when True, cap interior crossings to one per edge
 REJECT_ALL_INTERIOR_USED = False  # reject solutions that use every interior edge
-LONGCUT_MODE = True             # require all interior edges used, and some used > once
+LONGCUT_MODE = False             # require all interior edges used, and some used > once
+REQUIRE_ALL_MARKED_USED = True  # require every marked edge to be used at least once
 
 # BFS bounds and minimization parameters
 MAX_NODES = 5000
@@ -98,8 +100,10 @@ def _print_header(sig: str) -> None:
     print(f"Signature: {sig}")
     print(f"Surface: {SURFACE}")
     print(f"Unique: {UNIQUE}")
-    print(f"Directed mode: {DIRECTED_MODE}")
-    print(f"Exclude adjacent I: {EXCLUDE_ADJACENT_I and not DIRECTED_MODE}")
+    directed_mode = DIRECTED_MARKED or DIRECTED_INTERIOR
+    print(f"Directed marked: {DIRECTED_MARKED}")
+    print(f"Directed interior: {DIRECTED_INTERIOR}")
+    print(f"Exclude adjacent I: {EXCLUDE_ADJACENT_I and not directed_mode}")
     print(f"Prefix pruning: {PREFIX_PRUNING}")
     if PREFIX_PRUNING:
         print(f"Start prefix length: {START_PREFIX_LENGTH}")
@@ -111,6 +115,7 @@ def _print_header(sig: str) -> None:
     print(f"Dominant dir only: {DOMINANT_DIR_ONLY}")
     print(f"Reject all interior used: {REJECT_ALL_INTERIOR_USED}")
     print(f"Longcut mode: {LONGCUT_MODE}")
+    print(f"Require all marked used: {REQUIRE_ALL_MARKED_USED}")
     print(f"Max ports per edge: {MAX_PORTS_PER_EDGE}")
     print(f"Trace accepted path: {TRACE_ACCEPTED_PATH}")
     if TRACE_ACCEPTED_PATH:
@@ -184,6 +189,7 @@ def _render_result(
             require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
             require_dy_nonzero=REQUIRE_DY_NONZERO,
             reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+            require_all_marked_used=REQUIRE_ALL_MARKED_USED,
             longcut_mode=LONGCUT_MODE,
             dominant_dir_only=DOMINANT_DIR_ONLY,
             allow_complete_set=REQUIRE_DX_INFEASIBLE,
@@ -213,6 +219,7 @@ def _render_result(
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
                 reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                require_all_marked_used=REQUIRE_ALL_MARKED_USED,
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
@@ -240,6 +247,7 @@ def _render_result(
                 require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                 require_dy_nonzero=REQUIRE_DY_NONZERO,
                 reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                require_all_marked_used=REQUIRE_ALL_MARKED_USED,
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
@@ -273,6 +281,7 @@ def _render_result(
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    require_all_marked_used=REQUIRE_ALL_MARKED_USED,
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     debug=False,
@@ -436,26 +445,38 @@ def _insert_label_everywhere(base: Tuple[int, ...], new_label: int) -> Iterable[
 
 
 def _build_surface(sig, perm):
-    if DIRECTED_MODE:
-        return build_directed_surface_from_signature(sig, perm, surface=SURFACE)
+    if DIRECTED_MARKED or DIRECTED_INTERIOR:
+        return build_directed_surface_from_signature(
+            sig,
+            perm,
+            surface=SURFACE,
+            directed_marked=DIRECTED_MARKED,
+            directed_interior=DIRECTED_INTERIOR,
+        )
     return build_surface_from_signature(sig, perm, surface=SURFACE)
 
 
 def _unique_perms(m: int) -> Iterable[Tuple[int, ...]]:
-    if DIRECTED_MODE:
+    if DIRECTED_MARKED or DIRECTED_INTERIOR:
         return unique_perms_under_directed_symmetry(m, surface=SURFACE)
     return unique_perms_under_symmetry(m, surface=SURFACE)
 
 
 def _canonical_perm(perm: Tuple[int, ...], *, n: int) -> Tuple[int, ...]:
-    if DIRECTED_MODE:
+    if DIRECTED_MARKED or DIRECTED_INTERIOR:
         return canonical_perm_under_directed_symmetry(perm, surface=SURFACE, n=n)
     return canonical_perm_under_symmetry(perm, surface=SURFACE, n=n)
 
 
 def _surfaces(sig):
-    if DIRECTED_MODE:
-        return directed_surfaces_from_signature(sig, surface=SURFACE, unique=UNIQUE)
+    if DIRECTED_MARKED or DIRECTED_INTERIOR:
+        return directed_surfaces_from_signature(
+            sig,
+            surface=SURFACE,
+            unique=UNIQUE,
+            directed_marked=DIRECTED_MARKED,
+            directed_interior=DIRECTED_INTERIOR,
+        )
     return surfaces_from_signature(sig, surface=SURFACE, unique=UNIQUE, exclude_adjacent_I=EXCLUDE_ADJACENT_I)
 
 
@@ -466,7 +487,7 @@ def _enumerate_stage_perms(m: int) -> List[Tuple[int, ...]]:
 
 
 def _perm_has_adjacent_I(sig, perm, *, surface: str) -> bool:
-    if DIRECTED_MODE:
+    if DIRECTED_MARKED or DIRECTED_INTERIOR:
         return False
     n = len(sig)
     is_I = [s.name == "I" for s in sig]
@@ -660,7 +681,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
         basket = set()
 
         is_final = (m + 1 == n)
-        if is_final and EXCLUDE_ADJACENT_I and not DIRECTED_MODE:
+        if is_final and EXCLUDE_ADJACENT_I and not (DIRECTED_MARKED or DIRECTED_INTERIOR):
             total_final = sum(
                 1 for perm in candidates if not _perm_has_adjacent_I(sig_full, perm, surface=SURFACE)
             )
@@ -671,7 +692,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
         print(f"Frontier size: {len(candidates)}")
         stage_total = len(candidates)
         for idx, perm in enumerate(candidates, start=1):
-            if is_final and EXCLUDE_ADJACENT_I and not DIRECTED_MODE:
+            if is_final and EXCLUDE_ADJACENT_I and not (DIRECTED_MARKED or DIRECTED_INTERIOR):
                 if _perm_has_adjacent_I(sig_full, perm, surface=SURFACE):
                     continue
             surface_obj = _build_surface(sig_prefix, perm)
@@ -690,6 +711,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    require_all_marked_used=REQUIRE_ALL_MARKED_USED,
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
@@ -714,12 +736,13 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                     minimize_seed=MINIMIZE_SEED,
                     max_minimize_size=MAX_MINIMIZE_SIZE,
                     multiple_interior_edge_crossings=not LIMIT_INTERIOR_CROSSINGS,
-                    require_even_turning=REQUIRE_EVEN_TURNING,
-                    require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
-                    require_dy_nonzero=REQUIRE_DY_NONZERO,
-                    reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
-                    longcut_mode=LONGCUT_MODE,
-                    dominant_dir_only=DOMINANT_DIR_ONLY,
+                require_even_turning=REQUIRE_EVEN_TURNING,
+                require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
+                require_dy_nonzero=REQUIRE_DY_NONZERO,
+                reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                require_all_marked_used=REQUIRE_ALL_MARKED_USED,
+                longcut_mode=LONGCUT_MODE,
+                dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
                     debug=False,
                     progress=SHOW_PROGRESS,
@@ -811,6 +834,7 @@ def main() -> None:
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    require_all_marked_used=REQUIRE_ALL_MARKED_USED,
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
@@ -848,6 +872,7 @@ def main() -> None:
                     require_even_or_pairs=REQUIRE_EVEN_OR_PAIRS,
                     require_dy_nonzero=REQUIRE_DY_NONZERO,
                     reject_all_interior_used=REJECT_ALL_INTERIOR_USED,
+                    require_all_marked_used=REQUIRE_ALL_MARKED_USED,
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,

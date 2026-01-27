@@ -19,7 +19,13 @@ from square import Side
 from strips import Annulus, SquareStrip
 
 
-def build_standard_directed_surface(signature: List[KleinElt], *, surface: str = "annulus"):
+def build_standard_directed_surface(
+    signature: List[KleinElt],
+    *,
+    surface: str = "annulus",
+    directed_marked: bool = True,
+    directed_interior: bool = True,
+):
     """
     Build the standard directed surface for a signature.
     """
@@ -46,28 +52,29 @@ def build_standard_directed_surface(signature: List[KleinElt], *, surface: str =
         base.add_marked_pair(e1, e2, orientation_reversing=orientation_reversing)
 
     # Marked boundary edges inherit direction; unmarked boundary edges stay undirected.
-    for i, sym in enumerate(signature):
-        for side in (Side.TOP, Side.BOTTOM):
-            e_ref = EdgeRef(side, i)
-            if not base.is_marked_edge(e_ref):
-                continue
-            if sym.swap_tb:
-                directed.set_edge_direction(
-                    EdgeRef(Side.TOP, i), EdgeDir.OUT
-                )
-                directed.set_edge_direction(
-                    EdgeRef(Side.BOTTOM, i), EdgeDir.IN
-                )
-            else:
-                directed.set_edge_direction(
-                    EdgeRef(Side.TOP, i), EdgeDir.IN
-                )
-                directed.set_edge_direction(
-                    EdgeRef(Side.BOTTOM, i), EdgeDir.OUT
-                )
+    if directed_marked:
+        for i, sym in enumerate(signature):
+            for side in (Side.TOP, Side.BOTTOM):
+                e_ref = EdgeRef(side, i)
+                if not base.is_marked_edge(e_ref):
+                    continue
+                if sym.swap_tb:
+                    directed.set_edge_direction(
+                        EdgeRef(Side.TOP, i), EdgeDir.OUT
+                    )
+                    directed.set_edge_direction(
+                        EdgeRef(Side.BOTTOM, i), EdgeDir.IN
+                    )
+                else:
+                    directed.set_edge_direction(
+                        EdgeRef(Side.TOP, i), EdgeDir.IN
+                    )
+                    directed.set_edge_direction(
+                        EdgeRef(Side.BOTTOM, i), EdgeDir.OUT
+                    )
 
     # Interior edge directions: annulus directed, strip undirected.
-    if surface == "annulus":
+    if directed_interior and surface == "annulus":
         for i in range(n):
             directed.set_edge_direction(EdgeRef(Side.RIGHT, i), EdgeDir.OUT)
             directed.set_edge_direction(EdgeRef(Side.LEFT, i), EdgeDir.IN)
@@ -109,9 +116,19 @@ def permute_directed_surface_tiles(base, perm: Sequence[int], *, surface: str):
 
 
 def build_directed_surface_from_signature(
-    signature: List[KleinElt], perm: Sequence[int], *, surface: str = "annulus"
+    signature: List[KleinElt],
+    perm: Sequence[int],
+    *,
+    surface: str = "annulus",
+    directed_marked: bool = True,
+    directed_interior: bool = True,
 ):
-    base = build_standard_directed_surface(signature, surface=surface)
+    base = build_standard_directed_surface(
+        signature,
+        surface=surface,
+        directed_marked=directed_marked,
+        directed_interior=directed_interior,
+    )
     return permute_directed_surface_tiles(base, perm, surface=surface)
 
 
@@ -170,6 +187,8 @@ def directed_surfaces_from_signature(
     *,
     surface: str = "annulus",
     unique: bool = True,
+    directed_marked: bool = True,
+    directed_interior: bool = True,
 ):
     """
     Return a list of directed marked annuli/strips for a Klein signature.
@@ -184,5 +203,13 @@ def directed_surfaces_from_signature(
 
     out = []
     for perm in perms:
-        out.append(build_directed_surface_from_signature(sig, perm, surface=surface))
+        out.append(
+            build_directed_surface_from_signature(
+                sig,
+                perm,
+                surface=surface,
+                directed_marked=directed_marked,
+                directed_interior=directed_interior,
+            )
+        )
     return out

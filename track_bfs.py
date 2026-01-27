@@ -12,7 +12,7 @@ import sys
 from typing import Deque, Dict, List, Optional, Set, Tuple, Union
 
 from chord_diagram import ChordDiagram
-from marked_strips import EdgeRef, MarkedAnnulus, MarkedStrip
+from marked_strips import BoundaryEdge, EdgeRef, MarkedAnnulus, MarkedStrip
 from pattern import Pattern
 from shortcut_completeness import is_complete, reduce_complete_set
 from square import Side
@@ -242,6 +242,22 @@ def _uses_all_interior_edges(st: TrackState) -> bool:
     return used_interior.issuperset(all_interior)
 
 
+def _uses_all_marked_edges(st: TrackState) -> bool:
+    # Detect whether every marked edge has been used by some chord endpoint.
+    marked_edges = st.surface.marked_edges()
+    if not marked_edges:
+        return True
+    used_marked: set[BoundaryEdge] = set()
+    for i in range(st.surface.N):
+        diagram = st.diagrams[i]
+        for ch in diagram.chords:
+            for bp in (ch.a, ch.b):
+                be = BoundaryEdge(bp.side, i)
+                if st.surface.is_marked(be):
+                    used_marked.add(be)
+    return used_marked.issuperset(marked_edges)
+
+
 def _has_interior_edge_multiple_uses(st: TrackState) -> bool:
     """
     Return True if some interior edge is used more than once by chord endpoints.
@@ -448,6 +464,7 @@ def _candidate_or_dx_shortcut(
     require_even_or_pairs: bool,
     require_dy_nonzero: bool,
     reject_all_interior_used: bool,
+    require_all_marked_used: bool = False,
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     debug: bool,
@@ -533,6 +550,8 @@ def _candidate_or_dx_shortcut(
                     ok = ok and (st.dy != 0)
                 if reject_all_interior_used:
                     ok = ok and (not _uses_all_interior_edges(st))
+                if require_all_marked_used:
+                    ok = ok and _uses_all_marked_edges(st)
                 if longcut_mode:
                     ok = ok and _uses_all_interior_edges(st)
                     ok = ok and _has_interior_edge_multiple_uses(st)
@@ -611,6 +630,7 @@ def collect_candidate_states(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    require_all_marked_used: bool = False,
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     debug: bool = False,
@@ -687,6 +707,8 @@ def collect_candidate_states(
                     ok = ok and (st.dy != 0)
                 if reject_all_interior_used:
                     ok = ok and (not _uses_all_interior_edges(st))
+                if require_all_marked_used:
+                    ok = ok and _uses_all_marked_edges(st)
                 if longcut_mode:
                     ok = ok and _uses_all_interior_edges(st)
                     ok = ok and _has_interior_edge_multiple_uses(st)
@@ -931,6 +953,7 @@ def search_shortcut_or_complete_set(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    require_all_marked_used: bool = False,
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
@@ -957,6 +980,7 @@ def search_shortcut_or_complete_set(
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
+        require_all_marked_used=require_all_marked_used,
         longcut_mode=longcut_mode,
         dominant_dir_only=dominant_dir_only,
         debug=debug,
@@ -997,6 +1021,7 @@ def search_shortcut_or_complete_set_with_candidates(
     require_even_or_pairs: bool = True,
     require_dy_nonzero: bool = True,
     reject_all_interior_used: bool = False,
+    require_all_marked_used: bool = False,
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
@@ -1024,6 +1049,7 @@ def search_shortcut_or_complete_set_with_candidates(
         require_even_or_pairs=require_even_or_pairs,
         require_dy_nonzero=require_dy_nonzero,
         reject_all_interior_used=reject_all_interior_used,
+        require_all_marked_used=require_all_marked_used,
         longcut_mode=longcut_mode,
         dominant_dir_only=dominant_dir_only,
         debug=debug,
