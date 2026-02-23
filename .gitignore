@@ -88,3 +88,4 @@ dist/
 .eggs/
 legacy code/
 .DS_Store
+reports/

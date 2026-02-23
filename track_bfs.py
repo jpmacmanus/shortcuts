@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import itertools
 import sys
 from typing import Deque, Dict, List, Optional, Set, Tuple, Union
 
@@ -258,6 +259,75 @@ def _uses_all_marked_edges(st: TrackState) -> bool:
     return used_marked.issuperset(marked_edges)
 
 
+def _marked_edges_used(st: TrackState) -> set[BoundaryEdge]:
+    used_marked: set[BoundaryEdge] = set()
+    for i in range(st.surface.N):
+        diagram = st.diagrams[i]
+        for ch in diagram.chords:
+            for bp in (ch.a, ch.b):
+                be = BoundaryEdge(bp.side, i)
+                if st.surface.is_marked(be):
+                    used_marked.add(be)
+    return used_marked
+
+
+def _guaranteed_marked_edges(sets: List[TrackState]) -> set[BoundaryEdge]:
+    if not sets:
+        return set()
+    marked_all = set(sets[0].surface.marked_edges())
+    if not marked_all:
+        return set()
+    guaranteed = marked_all.copy()
+    for st in sets:
+        guaranteed &= _marked_edges_used(st)
+    return guaranteed
+
+
+def _nontrivial_simple_ok(st: TrackState) -> bool:
+    return st.dy != 0 and (st.turn_count % 2 == 0)
+
+
+def _nontrivial_complete_ok(cands: List[TrackState]) -> bool:
+    if not cands:
+        return False
+    if not is_complete(cands):
+        return False
+    return all(st.or_pair_count % 2 == 0 for st in cands)
+
+
+def _minimal_cover(
+    items: List[tuple[set[BoundaryEdge], object]],
+    target: set[BoundaryEdge],
+) -> Optional[List[object]]:
+    if not target:
+        return []
+    items = [(edges, obj) for edges, obj in items if edges]
+    if not items:
+        return None
+    # Exact search for small sets
+    if len(items) <= 20:
+        for r in range(1, len(items) + 1):
+            for combo in itertools.combinations(items, r):
+                covered = set()
+                for edges, _ in combo:
+                    covered |= edges
+                if covered.issuperset(target):
+                    return [obj for _, obj in combo]
+    # Greedy fallback
+    covered: set[BoundaryEdge] = set()
+    chosen: List[object] = []
+    remaining = items[:]
+    while not covered.issuperset(target) and remaining:
+        remaining.sort(key=lambda it: len(it[0] - covered), reverse=True)
+        edges, obj = remaining.pop(0)
+        if not edges - covered:
+            continue
+        chosen.append(obj)
+        covered |= edges
+    if covered.issuperset(target):
+        return chosen
+    return None
+
 def _has_interior_edge_multiple_uses(st: TrackState) -> bool:
     """
     Return True if some interior edge is used more than once by chord endpoints.
@@ -467,10 +537,13 @@ def _candidate_or_dx_shortcut(
     require_all_marked_used: bool = False,
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
+    cover_marked_edges: bool = False,
+    require_nontrivial: bool = False,
     debug: bool,
     debug_counts: Optional[dict] = None,
     progress: bool = False,
     progress_interval: int = 200,
+    progress_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
     trace_color: str = "",
@@ -518,8 +591,19 @@ def _candidate_or_dx_shortcut(
                     f"[{bar}] {expanded}/{max_nodes} "
                     f"queue {len(q)} seen {len(seen)}"
                 )
-                sys.stdout.write("\r" + msg)
-                sys.stdout.flush()
+                if progress_hook is not None:
+                    progress_hook(
+                        start_idx=start_idx,
+                        starts_total=len(starts),
+                        expanded=expanded,
+                        max_nodes=max_nodes,
+                        queue_len=len(q),
+                        seen_len=len(seen),
+                        msg=msg,
+                    )
+                else:
+                    sys.stdout.write("\r" + msg)
+                    sys.stdout.flush()
             if expanded > max_nodes:
                 break
 
@@ -550,15 +634,15 @@ def _candidate_or_dx_shortcut(
                     ok = ok and (st.dy != 0)
                 if reject_all_interior_used:
                     ok = ok and (not _uses_all_interior_edges(st))
-                if require_all_marked_used:
+                if require_all_marked_used and not cover_marked_edges:
                     ok = ok and _uses_all_marked_edges(st)
                 if longcut_mode:
                     ok = ok and _uses_all_interior_edges(st)
                     ok = ok and _has_interior_edge_multiple_uses(st)
                 if ok:
                     found.append(st)
-                    if _dx_all_pos_or_all_neg(st):
-                        if progress:
+                    if _dx_all_pos_or_all_neg(st) and not cover_marked_edges and not require_nontrivial:
+                        if progress and progress_hook is None:
                             sys.stdout.write("\n")
                             sys.stdout.flush()
                         if trace_accepted:
@@ -590,7 +674,7 @@ def _candidate_or_dx_shortcut(
                     if debug:
                         print(f"Candidate found. Total: {len(found)}")
                     if len(found) >= max_candidates:
-                        if progress:
+                        if progress and progress_hook is None:
                             sys.stdout.write("\n")
                             sys.stdout.flush()
                         return None, found
@@ -612,7 +696,7 @@ def _candidate_or_dx_shortcut(
                     parents[nxt_key] = (_state_key(st), nxt)
                 q.append(nxt)
 
-        if progress:
+        if progress and progress_hook is None:
             sys.stdout.write("\n")
             sys.stdout.flush()
 
@@ -757,6 +841,7 @@ def simple_shortcut_or_complete_set(
     debug: bool = False,
     progress: bool = False,
     progress_interval: int = 200,
+    progress_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
 ) -> TrackState | List[TrackState] | None:
@@ -776,6 +861,7 @@ def simple_shortcut_or_complete_set(
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
+        progress_hook=progress_hook,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
     )
@@ -805,6 +891,7 @@ def simple_shortcut_or_complete_set_with_candidates(
     debug_counts: Optional[dict] = None,
     progress: bool = False,
     progress_interval: int = 200,
+    progress_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
 ) -> tuple[TrackState | List[TrackState] | None, List[TrackState]]:
@@ -824,6 +911,7 @@ def simple_shortcut_or_complete_set_with_candidates(
         debug_counts=debug_counts,
         progress=progress,
         progress_interval=progress_interval,
+        progress_hook=progress_hook,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
     )
@@ -957,9 +1045,11 @@ def search_shortcut_or_complete_set(
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
+    require_nontrivial: bool = False,
     debug: bool = False,
     progress: bool = False,
     progress_interval: int = 200,
+    progress_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
     trace_accepted: bool = False,
@@ -970,6 +1060,7 @@ def search_shortcut_or_complete_set(
     """
     Generic search with configurable constraints and optional completeness check.
     """
+    allow_complete = allow_complete_set or require_nontrivial
     shortcut, candidates = _candidate_or_dx_shortcut(
         surface,
         max_nodes=max_nodes,
@@ -983,9 +1074,12 @@ def search_shortcut_or_complete_set(
         require_all_marked_used=require_all_marked_used,
         longcut_mode=longcut_mode,
         dominant_dir_only=dominant_dir_only,
+        cover_marked_edges=require_all_marked_used,
+        require_nontrivial=require_nontrivial,
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
+        progress_hook=progress_hook,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
         trace_accepted=trace_accepted,
@@ -993,19 +1087,86 @@ def search_shortcut_or_complete_set(
         trace_accepted_color=trace_accepted_color,
         trace_reset=trace_reset,
     )
-    if shortcut is not None:
-        return shortcut
-    if not allow_complete_set:
+    if require_nontrivial:
+        simple_candidates = [st for st in candidates if _nontrivial_simple_ok(st)]
+    else:
+        simple_candidates = [st for st in candidates if _dx_all_pos_or_all_neg(st)]
+
+    if not require_all_marked_used:
+        if simple_candidates:
+            return simple_candidates[0]
+        if not allow_complete:
+            return None
+        if not candidates:
+            return None
+        if require_nontrivial:
+            if not _nontrivial_complete_ok(candidates):
+                return None
+        else:
+            if not is_complete(candidates):
+                return None
+        return reduce_complete_set(
+            candidates,
+            seed=minimize_seed,
+            max_minimize_size=max_minimize_size,
+        )
+
+    marked_edges = set(surface.marked_edges())
+    if not marked_edges:
+        if shortcut is not None:
+            return shortcut
+        if allow_complete and candidates and (
+            (not require_nontrivial and is_complete(candidates))
+            or (require_nontrivial and _nontrivial_complete_ok(candidates))
+        ):
+            return reduce_complete_set(
+                candidates,
+                seed=minimize_seed,
+                max_minimize_size=max_minimize_size,
+            )
         return None
-    if not candidates:
+
+    items: List[tuple[set[BoundaryEdge], object]] = []
+    for st in simple_candidates:
+        items.append((_marked_edges_used(st), st))
+
+    if allow_complete and candidates:
+        # Add a global complete set if it exists.
+        if (not require_nontrivial and is_complete(candidates)) or (
+            require_nontrivial and _nontrivial_complete_ok(candidates)
+        ):
+            reduced = reduce_complete_set(
+                candidates,
+                seed=minimize_seed,
+                max_minimize_size=max_minimize_size,
+            )
+            guaranteed = _guaranteed_marked_edges(reduced)
+            if guaranteed:
+                items.append((guaranteed, reduced))
+
+        # Add per-marked-edge complete sets (candidates that all use that edge).
+        for edge in marked_edges:
+            edge_candidates = [st for st in candidates if edge in _marked_edges_used(st)]
+            if not edge_candidates:
+                continue
+            if require_nontrivial:
+                if not _nontrivial_complete_ok(edge_candidates):
+                    continue
+            elif not is_complete(edge_candidates):
+                continue
+            reduced = reduce_complete_set(
+                edge_candidates,
+                seed=minimize_seed,
+                max_minimize_size=max_minimize_size,
+            )
+            guaranteed = _guaranteed_marked_edges(reduced)
+            if edge in guaranteed:
+                items.append((guaranteed, reduced))
+
+    cover = _minimal_cover(items, marked_edges)
+    if cover is None:
         return None
-    if not is_complete(candidates):
-        return None
-    return reduce_complete_set(
-        candidates,
-        seed=minimize_seed,
-        max_minimize_size=max_minimize_size,
-    )
+    return cover
 
 
 def search_shortcut_or_complete_set_with_candidates(
@@ -1025,10 +1186,12 @@ def search_shortcut_or_complete_set_with_candidates(
     longcut_mode: bool = False,
     dominant_dir_only: bool = False,
     allow_complete_set: bool = True,
+    require_nontrivial: bool = False,
     debug: bool = False,
     debug_counts: Optional[dict] = None,
     progress: bool = False,
     progress_interval: int = 200,
+    progress_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
     trace_accepted: bool = False,
@@ -1039,6 +1202,7 @@ def search_shortcut_or_complete_set_with_candidates(
     """
     Generic search with candidates returned for diagnostics.
     """
+    allow_complete = allow_complete_set or require_nontrivial
     shortcut, candidates = _candidate_or_dx_shortcut(
         surface,
         max_nodes=max_nodes,
@@ -1052,10 +1216,13 @@ def search_shortcut_or_complete_set_with_candidates(
         require_all_marked_used=require_all_marked_used,
         longcut_mode=longcut_mode,
         dominant_dir_only=dominant_dir_only,
+        cover_marked_edges=require_all_marked_used,
+        require_nontrivial=require_nontrivial,
         debug=debug,
         debug_counts=debug_counts,
         progress=progress,
         progress_interval=progress_interval,
+        progress_hook=progress_hook,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
         trace_accepted=trace_accepted,
@@ -1063,22 +1230,90 @@ def search_shortcut_or_complete_set_with_candidates(
         trace_accepted_color=trace_accepted_color,
         trace_reset=trace_reset,
     )
-    if shortcut is not None:
-        return shortcut, candidates
-    if not allow_complete_set:
-        return None, candidates
-    if not candidates:
-        return None, candidates
-    if not is_complete(candidates):
-        return None, candidates
-    return (
-        reduce_complete_set(
+    if require_nontrivial:
+        simple_candidates = [st for st in candidates if _nontrivial_simple_ok(st)]
+    else:
+        simple_candidates = [st for st in candidates if _dx_all_pos_or_all_neg(st)]
+
+    if not require_all_marked_used:
+        if simple_candidates:
+            return simple_candidates[0], candidates
+        if not allow_complete:
+            return None, candidates
+        if not candidates:
+            return None, candidates
+        if require_nontrivial:
+            if not _nontrivial_complete_ok(candidates):
+                return None, candidates
+        else:
+            if not is_complete(candidates):
+                return None, candidates
+        return (
+            reduce_complete_set(
+                candidates,
+                seed=minimize_seed,
+                max_minimize_size=max_minimize_size,
+            ),
             candidates,
-            seed=minimize_seed,
-            max_minimize_size=max_minimize_size,
-        ),
-        candidates,
-    )
+        )
+
+    marked_edges = set(surface.marked_edges())
+    if not marked_edges:
+        if shortcut is not None:
+            return shortcut, candidates
+        if allow_complete and candidates and (
+            (not require_nontrivial and is_complete(candidates))
+            or (require_nontrivial and _nontrivial_complete_ok(candidates))
+        ):
+            return (
+                reduce_complete_set(
+                    candidates,
+                    seed=minimize_seed,
+                    max_minimize_size=max_minimize_size,
+                ),
+                candidates,
+            )
+        return None, candidates
+
+    items: List[tuple[set[BoundaryEdge], object]] = []
+    for st in simple_candidates:
+        items.append((_marked_edges_used(st), st))
+
+    if allow_complete and candidates:
+        if (not require_nontrivial and is_complete(candidates)) or (
+            require_nontrivial and _nontrivial_complete_ok(candidates)
+        ):
+            reduced = reduce_complete_set(
+                candidates,
+                seed=minimize_seed,
+                max_minimize_size=max_minimize_size,
+            )
+            guaranteed = _guaranteed_marked_edges(reduced)
+            if guaranteed:
+                items.append((guaranteed, reduced))
+
+        for edge in marked_edges:
+            edge_candidates = [st for st in candidates if edge in _marked_edges_used(st)]
+            if not edge_candidates:
+                continue
+            if require_nontrivial:
+                if not _nontrivial_complete_ok(edge_candidates):
+                    continue
+            elif not is_complete(edge_candidates):
+                continue
+            reduced = reduce_complete_set(
+                edge_candidates,
+                seed=minimize_seed,
+                max_minimize_size=max_minimize_size,
+            )
+            guaranteed = _guaranteed_marked_edges(reduced)
+            if edge in guaranteed:
+                items.append((guaranteed, reduced))
+
+    cover = _minimal_cover(items, marked_edges)
+    if cover is None:
+        return None, candidates
+    return cover, candidates
 
 
 def diagnose_simple_shortcut(

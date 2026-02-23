@@ -34,8 +34,8 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-SIGNATURE = "I H V R I"  # Klein signature to be searched over.
-SURFACE = "annulus"        # "annulus" or "strip"
+SIGNATURE = "I R I"  # Klein signature to be searched over.
+SURFACE = "strip"        # "annulus" or "strip"
 # Directed edge modes (can be enabled independently).
 DIRECTED_MARKED = True    # vertical directions on marked TOP/BOTTOM edges
 DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus only)
@@ -44,23 +44,24 @@ DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus on
 UNIQUE = True               # skips surfaces which differ by a symmetry.
 EXCLUDE_ADJACENT_I = False   # skip cases which have trivial solutions due to adjacent I squares.
                             # ignored when any directed mode is enabled.
-PREFIX_PRUNING = True       # start search on smaller prefix cases and build up to desired case.
+PREFIX_PRUNING = False       # start search on smaller prefix cases and build up to desired case.
 START_PREFIX_LENGTH = 2     # only used when PREFIX_PRUNING=True
 
 # Acceptance constraints
-REQUIRE_DY_NONZERO = True        # only accept tracks with dy != 0
+REQUIRE_DY_NONZERO = False        # only accept tracks with dy != 0
 REQUIRE_DX_INFEASIBLE = False     # require dx != 0:
                                  #      when raised, will sometimes return multiple candidates 
                                  #      to account for extra unmarked squares.
                                  #      at least one of these candidates is guaranteed to work for 
                                  #      any given assignment of weights.
-REQUIRE_EVEN_TURNING = True      # only accept tracks with an even number of turns.
+REQUIRE_EVEN_TURNING = False      # only accept tracks with an even number of turns.
 REQUIRE_EVEN_OR_PAIRS = False     # only accept orientable tracks (no Mobius band neighbourhood)
 DOMINANT_DIR_ONLY = False        # only move along dominant x-direction (free first move)
 LIMIT_INTERIOR_CROSSINGS = False  # when True, cap interior crossings to one per edge
 REJECT_ALL_INTERIOR_USED = False  # reject solutions that use every interior edge
 LONGCUT_MODE = False             # require all interior edges used, and some used > once
 REQUIRE_ALL_MARKED_USED = True  # require every marked edge to be used at least once
+REQUIRE_NONTRIVIAL = True       # require (dy!=0 & even turns) OR (dx infeasible & even OR pairs)
 
 # BFS bounds and minimization parameters
 MAX_NODES = 5000
@@ -116,6 +117,7 @@ def _print_header(sig: str) -> None:
     print(f"Reject all interior used: {REJECT_ALL_INTERIOR_USED}")
     print(f"Longcut mode: {LONGCUT_MODE}")
     print(f"Require all marked used: {REQUIRE_ALL_MARKED_USED}")
+    print(f"Require nontrivial: {REQUIRE_NONTRIVIAL}")
     print(f"Max ports per edge: {MAX_PORTS_PER_EDGE}")
     print(f"Trace accepted path: {TRACE_ACCEPTED_PATH}")
     if TRACE_ACCEPTED_PATH:
@@ -193,6 +195,7 @@ def _render_result(
             longcut_mode=LONGCUT_MODE,
             dominant_dir_only=DOMINANT_DIR_ONLY,
             allow_complete_set=REQUIRE_DX_INFEASIBLE,
+            require_nontrivial=REQUIRE_NONTRIVIAL,
             debug=False,
             progress=False,
             trace_steps=True,
@@ -223,6 +226,7 @@ def _render_result(
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                require_nontrivial=REQUIRE_NONTRIVIAL,
                 debug=False,
                 debug_counts=debug_counts,
                 progress=SHOW_PROGRESS,
@@ -251,6 +255,7 @@ def _render_result(
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                require_nontrivial=REQUIRE_NONTRIVIAL,
                 debug=False,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
@@ -349,6 +354,33 @@ def _render_result(
                 )
         print()
         return (0, 0, 1, 0)
+
+    if isinstance(result, list) and REQUIRE_ALL_MARKED_USED:
+        print(
+            f"{_COLOR_AMBER}Covering set found "
+            f"(size {len(result)}).{_COLOR_RESET}"
+        )
+        complete_count = 0
+        simple_count = 0
+        max_complete_size = 0
+        for r_idx, item in enumerate(result, start=1):
+            if isinstance(item, list):
+                complete_count = 1
+                max_complete_size = max(max_complete_size, len(item))
+                print(f"  [{r_idx}] Complete candidate set (size {len(item)})")
+                for c_idx, st in enumerate(item, start=1):
+                    print(f"    ({c_idx}) dy: {st.dy}  dx: {st.dx_linear_form(pretty=True)}")
+                    print(st.render())
+                    print()
+            else:
+                simple_count = 1
+                st = item
+                print(f"  [{r_idx}] Simple shortcut")
+                print(st.render())
+                print(f"dy: {st.dy}")
+                print(f"dx: {st.dx_linear_form(pretty=True)}")
+                print()
+        return (simple_count, complete_count, 0, max_complete_size)
 
     if isinstance(result, list):
         print(
@@ -572,6 +604,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                require_nontrivial=REQUIRE_NONTRIVIAL,
                 debug=False,
                 debug_counts=debug_counts,
                 progress=SHOW_PROGRESS,
@@ -621,6 +654,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                 allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                require_nontrivial=REQUIRE_NONTRIVIAL,
                 debug=False,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
@@ -715,6 +749,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                    require_nontrivial=REQUIRE_NONTRIVIAL,
                     debug=False,
                     debug_counts=debug_counts,
                     progress=SHOW_PROGRESS,
@@ -744,6 +779,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                 longcut_mode=LONGCUT_MODE,
                 dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                    require_nontrivial=REQUIRE_NONTRIVIAL,
                     debug=False,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
@@ -838,6 +874,7 @@ def main() -> None:
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                    require_nontrivial=REQUIRE_NONTRIVIAL,
                     debug=False,
                     debug_counts=debug_counts,
                     progress=SHOW_PROGRESS,
@@ -876,6 +913,7 @@ def main() -> None:
                     longcut_mode=LONGCUT_MODE,
                     dominant_dir_only=DOMINANT_DIR_ONLY,
                     allow_complete_set=REQUIRE_DX_INFEASIBLE,
+                    require_nontrivial=REQUIRE_NONTRIVIAL,
                     debug=False,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
