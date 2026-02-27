@@ -6,7 +6,9 @@ Run an exhaustive search over a Klein signature and report shortcuts.
 
 from __future__ import annotations
 
+from datetime import datetime
 from itertools import permutations
+from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 from klein_signature_generator import (
@@ -34,10 +36,10 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-SIGNATURE = "I R I"  # Klein signature to be searched over.
+SIGNATURE = "I H I"  # Klein signature to be searched over.
 SURFACE = "strip"        # "annulus" or "strip"
 # Directed edge modes (can be enabled independently).
-DIRECTED_MARKED = True    # vertical directions on marked TOP/BOTTOM edges
+DIRECTED_MARKED = False    # vertical directions on marked TOP/BOTTOM edges
 DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus only)
 
 # Generation / symmetry controls
@@ -48,20 +50,20 @@ PREFIX_PRUNING = False       # start search on smaller prefix cases and build up
 START_PREFIX_LENGTH = 2     # only used when PREFIX_PRUNING=True
 
 # Acceptance constraints
-REQUIRE_DY_NONZERO = False        # only accept tracks with dy != 0
+REQUIRE_DY_NONZERO = True        # only accept tracks with dy != 0
 REQUIRE_DX_INFEASIBLE = False     # require dx != 0:
                                  #      when raised, will sometimes return multiple candidates 
                                  #      to account for extra unmarked squares.
                                  #      at least one of these candidates is guaranteed to work for 
                                  #      any given assignment of weights.
-REQUIRE_EVEN_TURNING = False      # only accept tracks with an even number of turns.
+REQUIRE_EVEN_TURNING = True      # only accept tracks with an even number of turns.
 REQUIRE_EVEN_OR_PAIRS = False     # only accept orientable tracks (no Mobius band neighbourhood)
 DOMINANT_DIR_ONLY = False        # only move along dominant x-direction (free first move)
 LIMIT_INTERIOR_CROSSINGS = False  # when True, cap interior crossings to one per edge
 REJECT_ALL_INTERIOR_USED = False  # reject solutions that use every interior edge
 LONGCUT_MODE = False             # require all interior edges used, and some used > once
-REQUIRE_ALL_MARKED_USED = True  # require every marked edge to be used at least once
-REQUIRE_NONTRIVIAL = True       # require (dy!=0 & even turns) OR (dx infeasible & even OR pairs)
+REQUIRE_ALL_MARKED_USED = False  # require every marked edge to be used at least once
+REQUIRE_NONTRIVIAL = False       # require (dy!=0 & even turns) OR (dx infeasible & even OR pairs)
 
 # BFS bounds and minimization parameters
 MAX_NODES = 5000
@@ -83,12 +85,24 @@ DEBUG_BFS_STEPS_MAX = 5000
 SHOW_PROGRESS = True
 PROGRESS_INTERVAL = 200
 
+# Optional markdown report
+WRITE_MARKDOWN_REPORT = True
+REPORT_DIR = "reports"
+REPORT_FILENAME = "ihi-debug.md"  # Empty => auto filename in REPORT_DIR
+REPORT_INCLUDE_BFS_STREAM = True
+
 # ANSI colors
 _COLOR_RESET = "\033[0m"
 _COLOR_START = "\033[36m"
 _COLOR_FAIL = "\033[31m"
 _COLOR_AMBER = "\033[33m"
 _COLOR_TRACE = "\033[34m"
+
+# Report accumulators (populated per run)
+_REPORT_CASE_ROWS: List[dict] = []
+_REPORT_SOLUTIONS: List[dict] = []
+_REPORT_UNSOLVED: List[dict] = []
+_REPORT_BFS_STREAMS: List[dict] = []
 
 
 # ----------------------------
@@ -135,6 +149,9 @@ def _print_header(sig: str) -> None:
     print(f"Show progress: {SHOW_PROGRESS}")
     if SHOW_PROGRESS:
         print(f"Progress interval: {PROGRESS_INTERVAL}")
+    print(f"Write markdown report: {WRITE_MARKDOWN_REPORT}")
+    if WRITE_MARKDOWN_REPORT:
+        print(f"Include BFS stream in report: {REPORT_INCLUDE_BFS_STREAM}")
     print()
 
 
@@ -151,6 +168,23 @@ def _print_case_header(
         label = "Annulus" if SURFACE == "annulus" else "Strip"
     print(f"{label} [{idx} / {total}]")
     print(f"{_COLOR_START}{surface}{_COLOR_RESET}")
+
+
+def _new_stream_capture(stage: str, idx: int, total: int):
+    events: List[dict] = []
+
+    def _hook(ev: dict) -> None:
+        events.append(ev)
+
+    return {"stage": stage, "idx": idx, "total": total, "events": events}, _hook
+
+
+def _append_stream_capture(capture: Optional[dict]) -> None:
+    if not (WRITE_MARKDOWN_REPORT and REPORT_INCLUDE_BFS_STREAM):
+        return
+    if capture is None:
+        return
+    _REPORT_BFS_STREAMS.append(capture)
 
 
 def _render_result(
@@ -179,6 +213,14 @@ def _render_result(
     def _trace_unsolved() -> None:
         if not DEBUG_BFS_STEPS:
             return
+        cap = None
+        stream_hook = None
+        if WRITE_MARKDOWN_REPORT and REPORT_INCLUDE_BFS_STREAM:
+            cap, stream_hook = _new_stream_capture(
+                label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                idx,
+                total,
+            )
         search_shortcut_or_complete_set(
             surface,
             max_nodes=MAX_NODES,
@@ -198,6 +240,7 @@ def _render_result(
             require_nontrivial=REQUIRE_NONTRIVIAL,
             debug=False,
             progress=False,
+            stream_hook=stream_hook,
             trace_steps=True,
             trace_max_steps=DEBUG_BFS_STEPS_MAX,
             trace_accepted=TRACE_ACCEPTED_PATH,
@@ -205,8 +248,17 @@ def _render_result(
             trace_accepted_color=_COLOR_START,
             trace_reset=_COLOR_RESET,
         )
+        _append_stream_capture(cap)
 
     if result is None and not skip_search:
+        cap = None
+        stream_hook = None
+        if WRITE_MARKDOWN_REPORT and REPORT_INCLUDE_BFS_STREAM:
+            cap, stream_hook = _new_stream_capture(
+                label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                idx,
+                total,
+            )
         if DEBUG_UNSOLVED:
             if debug_counts is None:
                 debug_counts = {}
@@ -231,6 +283,7 @@ def _render_result(
                 debug_counts=debug_counts,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
+                stream_hook=stream_hook,
                 trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 trace_accepted=TRACE_ACCEPTED_PATH,
@@ -259,6 +312,7 @@ def _render_result(
                 debug=False,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
+                stream_hook=stream_hook,
                 trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 trace_accepted=TRACE_ACCEPTED_PATH,
@@ -266,6 +320,7 @@ def _render_result(
                 trace_accepted_color=_COLOR_START,
                 trace_reset=_COLOR_RESET,
             )
+        _append_stream_capture(cap)
 
     if result is None:
         _trace_unsolved()
@@ -352,6 +407,25 @@ def _render_result(
                     f"{_COLOR_FAIL}Direction block (paired IN): "
                     f"{debug_counts.get('dir_block_pair_in', 0)}{_COLOR_RESET}"
                 )
+        _REPORT_CASE_ROWS.append(
+            {
+                "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                "idx": idx,
+                "total": total,
+                "conclusion": "Unsolved",
+                "simple": 0,
+                "complete": 0,
+                "unsolved": 1,
+            }
+        )
+        _REPORT_UNSOLVED.append(
+            {
+                "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                "idx": idx,
+                "total": total,
+                "surface": str(surface),
+            }
+        )
         print()
         return (0, 0, 1, 0)
 
@@ -371,7 +445,7 @@ def _render_result(
                 for c_idx, st in enumerate(item, start=1):
                     print(f"    ({c_idx}) dy: {st.dy}  dx: {st.dx_linear_form(pretty=True)}")
                     print(st.render())
-                    print()
+                print()
             else:
                 simple_count = 1
                 st = item
@@ -380,6 +454,53 @@ def _render_result(
                 print(f"dy: {st.dy}")
                 print(f"dx: {st.dx_linear_form(pretty=True)}")
                 print()
+        _REPORT_CASE_ROWS.append(
+            {
+                "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                "idx": idx,
+                "total": total,
+                "conclusion": "Covering set",
+                "simple": simple_count,
+                "complete": complete_count,
+                "unsolved": 0,
+            }
+        )
+        _REPORT_SOLUTIONS.append(
+            {
+                "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                "idx": idx,
+                "kind": "covering",
+                "text": "\n".join(
+                    ["Covering set found."]
+                    + [
+                        (
+                            "\n".join(
+                                [f"Complete candidate set (size {len(item)})."]
+                                + [
+                                    "\n".join(
+                                        [
+                                            f"dy: {st.dy}",
+                                            f"dx: {st.dx_linear_form(pretty=True)}",
+                                            st.render(),
+                                        ]
+                                    )
+                                    for st in item
+                                ]
+                            )
+                            if isinstance(item, list)
+                            else "\n".join(
+                                [
+                                    f"dy: {item.dy}",
+                                    f"dx: {item.dx_linear_form(pretty=True)}",
+                                    item.render(),
+                                ]
+                            )
+                        )
+                        for item in result
+                    ]
+                ),
+            }
+        )
         return (simple_count, complete_count, 0, max_complete_size)
 
     if isinstance(result, list):
@@ -403,6 +524,37 @@ def _render_result(
         if len(result) == 1:
             reason = diagnose_simple_shortcut(surface, result[0])
             print(f"{_COLOR_AMBER}Single-candidate diagnostic:{_COLOR_RESET} {reason}")
+        _REPORT_CASE_ROWS.append(
+            {
+                "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                "idx": idx,
+                "total": total,
+                "conclusion": "Complete set",
+                "simple": 0,
+                "complete": 1,
+                "unsolved": 0,
+            }
+        )
+        _REPORT_SOLUTIONS.append(
+            {
+                "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+                "idx": idx,
+                "kind": "complete",
+                "text": "\n".join(
+                    ["Complete candidate set found."]
+                    + [
+                        "\n".join(
+                            [
+                                f"dy: {st.dy}",
+                                f"dx: {st.dx_linear_form(pretty=True)}",
+                                st.render(),
+                            ]
+                        )
+                        for st in result
+                    ]
+                ),
+            }
+        )
         print()
         return (0, complete_count, 0, max_complete_size)
 
@@ -419,6 +571,32 @@ def _render_result(
             )
     print()
     simple_count = 1
+    _REPORT_CASE_ROWS.append(
+        {
+            "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+            "idx": idx,
+            "total": total,
+            "conclusion": "Simple shortcut",
+            "simple": 1,
+            "complete": 0,
+            "unsolved": 0,
+        }
+    )
+    _REPORT_SOLUTIONS.append(
+        {
+            "stage": label or ("Annulus" if SURFACE == "annulus" else "Strip"),
+            "idx": idx,
+            "kind": "simple",
+            "text": "\n".join(
+                [
+                    "Simple shortcut found.",
+                    result.render(),
+                    f"dy: {result.dy}",
+                    f"dx: {result.dx_linear_form(pretty=True)}",
+                ]
+            ),
+        }
+    )
     return (simple_count, 0, 0, 0)
 
 
@@ -470,6 +648,178 @@ def _print_diagnostics(
             print(f"{_COLOR_AMBER}Max complete set size:{_COLOR_RESET} n/a")
 
 
+def _write_markdown_report(
+    *,
+    total: int,
+    simple_count: int,
+    complete_count: int,
+    unsolved_count: int,
+    max_complete_size: int,
+    stage_rows: Optional[List[Tuple[str, int, int, int, int, int]]] = None,
+) -> Path:
+    report_dir = Path(REPORT_DIR)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    if REPORT_FILENAME.strip():
+        out = Path(REPORT_FILENAME.strip())
+        if not out.is_absolute():
+            out = report_dir / out
+    else:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = report_dir / f"exhaustive_search_report_{SURFACE}_{SIGNATURE.replace(' ', '')}_{stamp}.md"
+
+    lines: List[str] = []
+    lines.append("# Exhaustive Search Report")
+    lines.append("")
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- Signature: `{SIGNATURE}`")
+    lines.append(f"- Surface: `{SURFACE}`")
+    lines.append(f"- Directed marked: `{DIRECTED_MARKED}`")
+    lines.append(f"- Directed interior: `{DIRECTED_INTERIOR}`")
+    lines.append(f"- Prefix pruning: `{PREFIX_PRUNING}`")
+    if PREFIX_PRUNING:
+        lines.append(f"- Start prefix length: `{START_PREFIX_LENGTH}`")
+    lines.append(f"- Require dy nonzero: `{REQUIRE_DY_NONZERO}`")
+    lines.append(f"- Require dx infeasible: `{REQUIRE_DX_INFEASIBLE}`")
+    lines.append(f"- Require even turning: `{REQUIRE_EVEN_TURNING}`")
+    lines.append(f"- Require even OR pairs: `{REQUIRE_EVEN_OR_PAIRS}`")
+    lines.append(f"- Require all marked used: `{REQUIRE_ALL_MARKED_USED}`")
+    lines.append(f"- Require nontrivial: `{REQUIRE_NONTRIVIAL}`")
+    lines.append("")
+    lines.append(f"- Total cases: `{total}`")
+    lines.append(f"- Simple: `{simple_count}`")
+    lines.append(f"- Complete: `{complete_count}`")
+    lines.append(f"- Unsolved: `{unsolved_count}`")
+    lines.append(f"- Max complete set size: `{max_complete_size if complete_count else 'n/a'}`")
+    lines.append("")
+
+    if stage_rows:
+        lines.append("## Stage Diagnostics")
+        lines.append("")
+        lines.append("| Stage | Total | Simple | Complete | Unsolved | MaxSet |")
+        lines.append("|---|---:|---:|---:|---:|---:|")
+        for label, total_s, simple_s, complete_s, unsolved_s, max_s in stage_rows:
+            max_val = max_s if complete_s else "n/a"
+            lines.append(f"| `{label}` | {total_s} | {simple_s} | {complete_s} | {unsolved_s} | {max_val} |")
+        lines.append("")
+
+    lines.append("## Cases")
+    lines.append("")
+    lines.append("| Stage | Case | Conclusion | Simple | Complete | Unsolved |")
+    lines.append("|---|---:|---|---:|---:|---:|")
+    for row in _REPORT_CASE_ROWS:
+        lines.append(
+            f"| `{row['stage']}` | {row['idx']}/{row['total']} | {row['conclusion']} | "
+            f"{row['simple']} | {row['complete']} | {row['unsolved']} |"
+        )
+    lines.append("")
+
+    lines.append("## Case Renders")
+    lines.append("")
+    combined_rows: List[dict] = []
+    for sol in _REPORT_SOLUTIONS:
+        combined_rows.append(
+            {
+                "stage": sol["stage"],
+                "idx": sol["idx"],
+                "kind": sol["kind"],
+                "text": sol["text"],
+                "total": None,
+            }
+        )
+    for row in _REPORT_UNSOLVED:
+        combined_rows.append(
+            {
+                "stage": row["stage"],
+                "idx": row["idx"],
+                "kind": "unsolved",
+                "text": row["surface"],
+                "total": row["total"],
+            }
+        )
+
+    if not combined_rows:
+        lines.append("No case renders available.")
+    else:
+        for i, row in enumerate(sorted(combined_rows, key=lambda r: (r["stage"], r["idx"], r["kind"])), start=1):
+            if row["kind"] == "unsolved":
+                lines.append(
+                    f"### {i}. <span style=\"color:#cc0000\">UNSOLVED</span> "
+                    f"Stage `{row['stage']}` Case `{row['idx']}/{row['total']}`"
+                )
+            else:
+                lines.append(f"### {i}. Stage `{row['stage']}` Case `{row['idx']}` ({row['kind']})")
+            lines.append("")
+            lines.append("```text")
+            lines.append(row["text"])
+            lines.append("```")
+            lines.append("")
+
+    if REPORT_INCLUDE_BFS_STREAM:
+        lines.append("## BFS Streams")
+        lines.append("")
+        if not _REPORT_BFS_STREAMS:
+            lines.append("No BFS stream data captured.")
+            lines.append("")
+        else:
+            for i, capture in enumerate(_REPORT_BFS_STREAMS, start=1):
+                stage = capture.get("stage", "Unknown")
+                idx = capture.get("idx", "?")
+                total_case = capture.get("total", "?")
+                lines.append(f"### {i}. Stage `{stage}` Case `{idx}/{total_case}`")
+                lines.append("")
+                for ev in capture.get("events", []):
+                    et = ev.get("type", "")
+                    if et == "step":
+                        lines.append(
+                            f"- step={ev.get('expanded', '?')}/{ev.get('max_nodes', '?')} "
+                            f"start={ev.get('start_idx', '?')}/{ev.get('starts_total', '?')} "
+                            f"cursor={ev.get('cursor', '?')} "
+                            f"queue={ev.get('queue', '?')} seen={ev.get('seen', '?')} "
+                            f"generated={ev.get('generated', '?')} "
+                            f"dy={ev.get('dy', '?')} dx=`{ev.get('dx', '?')}` "
+                            f"turns={ev.get('turns', '?')} or_pairs={ev.get('or_pairs', '?')}"
+                        )
+                        if ev.get("render"):
+                            lines.append("")
+                            lines.append("```text")
+                            lines.append(ev["render"])
+                            lines.append("```")
+                    elif et == "closed_accepted":
+                        lines.append(
+                            f"- <span style=\"color:#008800\">closed accepted</span> "
+                            f"at step {ev.get('expanded', '?')}: "
+                            f"dy={ev.get('dy', '?')} dx=`{ev.get('dx', '?')}` "
+                            f"turns={ev.get('turns', '?')} or_pairs={ev.get('or_pairs', '?')}"
+                        )
+                        if ev.get("render"):
+                            lines.append("")
+                            lines.append("```text")
+                            lines.append(ev["render"])
+                            lines.append("```")
+                    elif et == "closed_rejected":
+                        reasons = ev.get("reasons", [])
+                        reason_txt = "; ".join(str(r) for r in reasons) if reasons else "no reason provided"
+                        lines.append(
+                            f"- <span style=\"color:#cc0000\">closed rejected</span> "
+                            f"at step {ev.get('expanded', '?')}: "
+                            f"dy={ev.get('dy', '?')} dx=`{ev.get('dx', '?')}` "
+                            f"turns={ev.get('turns', '?')} or_pairs={ev.get('or_pairs', '?')} "
+                            f"reason: <span style=\"color:#cc0000\">{reason_txt}</span>"
+                        )
+                        if ev.get("render"):
+                            lines.append("")
+                            lines.append("```text")
+                            lines.append(ev["render"])
+                            lines.append("```")
+                    else:
+                        lines.append(f"- event `{et}`: `{ev}`")
+                lines.append("")
+
+    out.write_text("\n".join(lines) + "\n")
+    return out
+
+
 def _insert_label_everywhere(base: Tuple[int, ...], new_label: int) -> Iterable[Tuple[int, ...]]:
     m = len(base)
     for pos in range(m + 1):
@@ -490,13 +840,22 @@ def _build_surface(sig, perm):
 
 def _unique_perms(m: int) -> Iterable[Tuple[int, ...]]:
     if DIRECTED_MARKED or DIRECTED_INTERIOR:
-        return unique_perms_under_directed_symmetry(m, surface=SURFACE)
+        return unique_perms_under_directed_symmetry(
+            m,
+            surface=SURFACE,
+            directed_interior=DIRECTED_INTERIOR,
+        )
     return unique_perms_under_symmetry(m, surface=SURFACE)
 
 
 def _canonical_perm(perm: Tuple[int, ...], *, n: int) -> Tuple[int, ...]:
     if DIRECTED_MARKED or DIRECTED_INTERIOR:
-        return canonical_perm_under_directed_symmetry(perm, surface=SURFACE, n=n)
+        return canonical_perm_under_directed_symmetry(
+            perm,
+            surface=SURFACE,
+            n=n,
+            directed_interior=DIRECTED_INTERIOR,
+        )
     return canonical_perm_under_symmetry(perm, surface=SURFACE, n=n)
 
 
@@ -588,6 +947,10 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
         debug_counts: dict = {}
         stage_total = len(candidates)
         _print_case_header(idx, stage_total, surface_obj, label=f"Stage {START_PREFIX_LENGTH}")
+        cap = None
+        stream_hook = None
+        if WRITE_MARKDOWN_REPORT and REPORT_INCLUDE_BFS_STREAM:
+            cap, stream_hook = _new_stream_capture(f"Stage {START_PREFIX_LENGTH}", idx, stage_total)
         if DEBUG_UNSOLVED:
             result, candidates = search_shortcut_or_complete_set_with_candidates(
                 surface_obj,
@@ -609,6 +972,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                 debug_counts=debug_counts,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
+                stream_hook=stream_hook,
                 trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 trace_accepted=TRACE_ACCEPTED_PATH,
@@ -658,6 +1022,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                 debug=False,
                 progress=SHOW_PROGRESS,
                 progress_interval=PROGRESS_INTERVAL,
+                stream_hook=stream_hook,
                 trace_steps=False,
                 trace_max_steps=DEBUG_BFS_STEPS_MAX,
                 trace_accepted=TRACE_ACCEPTED_PATH,
@@ -685,6 +1050,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                 unsolved_total += u
                 if msize > max_complete_size:
                     max_complete_size = msize
+        _append_stream_capture(cap)
         if result is None:
             basket.add(perm)
     print(f"Remaining bad prefixes: {len(basket)}")
@@ -732,6 +1098,10 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
             surface_obj = _build_surface(sig_prefix, perm)
             debug_counts = {}
             _print_case_header(idx, stage_total, surface_obj, label=f"Stage {m + 1}")
+            cap = None
+            stream_hook = None
+            if WRITE_MARKDOWN_REPORT and REPORT_INCLUDE_BFS_STREAM:
+                cap, stream_hook = _new_stream_capture(f"Stage {m + 1}", idx, stage_total)
             if DEBUG_UNSOLVED:
                 result, candidates = search_shortcut_or_complete_set_with_candidates(
                     surface_obj,
@@ -754,6 +1124,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                     debug_counts=debug_counts,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
+                    stream_hook=stream_hook,
                     trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                     trace_accepted=TRACE_ACCEPTED_PATH,
@@ -783,6 +1154,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                     debug=False,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
+                    stream_hook=stream_hook,
                     trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                     trace_accepted=TRACE_ACCEPTED_PATH,
@@ -790,6 +1162,7 @@ def _prefix_pruning_search(sig_full) -> tuple[int, int, int, int, int, List[Tupl
                     trace_accepted_color=_COLOR_START,
                     trace_reset=_COLOR_RESET,
                 )
+            _append_stream_capture(cap)
             if is_final:
                 total_cases += 1
                 s, c, u, msize = _render_result(
@@ -841,6 +1214,11 @@ def main() -> None:
     # Toggle optional debug rendering flags.
     import marked_strips
     import pattern
+    global _REPORT_CASE_ROWS, _REPORT_SOLUTIONS, _REPORT_UNSOLVED, _REPORT_BFS_STREAMS
+    _REPORT_CASE_ROWS = []
+    _REPORT_SOLUTIONS = []
+    _REPORT_UNSOLVED = []
+    _REPORT_BFS_STREAMS = []
     marked_strips.DEBUG_INTERIOR_LABELS = DEBUG_INTERIOR_EDGE_LABELS
     pattern.DEBUG_INTERIOR_LABELS = DEBUG_INTERIOR_EDGE_LABELS
 
@@ -857,6 +1235,14 @@ def main() -> None:
         for idx, surface in enumerate(surfaces, start=1):
             debug_counts = {}
             _print_case_header(idx, len(surfaces), surface)
+            cap = None
+            stream_hook = None
+            if WRITE_MARKDOWN_REPORT and REPORT_INCLUDE_BFS_STREAM:
+                cap, stream_hook = _new_stream_capture(
+                    "Annulus" if SURFACE == "annulus" else "Strip",
+                    idx,
+                    len(surfaces),
+                )
             if DEBUG_UNSOLVED:
                 result, candidates = search_shortcut_or_complete_set_with_candidates(
                     surface,
@@ -879,6 +1265,7 @@ def main() -> None:
                     debug_counts=debug_counts,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
+                    stream_hook=stream_hook,
                     trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                     trace_accepted=TRACE_ACCEPTED_PATH,
@@ -917,6 +1304,7 @@ def main() -> None:
                     debug=False,
                     progress=SHOW_PROGRESS,
                     progress_interval=PROGRESS_INTERVAL,
+                    stream_hook=stream_hook,
                     trace_steps=False,
                     trace_max_steps=DEBUG_BFS_STEPS_MAX,
                     trace_accepted=TRACE_ACCEPTED_PATH,
@@ -932,6 +1320,7 @@ def main() -> None:
                     skip_search=True,
                     show_header=False,
                 )
+            _append_stream_capture(cap)
             simple_total += s
             complete_total += c
             unsolved_total += u
@@ -958,6 +1347,17 @@ def main() -> None:
         max_complete_size=max_complete_size,
         stage_rows=stage_rows,
     )
+    if WRITE_MARKDOWN_REPORT:
+        out = _write_markdown_report(
+            total=total,
+            simple_count=simple_total,
+            complete_count=complete_total,
+            unsolved_count=unsolved_total,
+            max_complete_size=max_complete_size,
+            stage_rows=stage_rows,
+        )
+        print()
+        print(f"Markdown report written to: {out}")
 
 
 if __name__ == "__main__":

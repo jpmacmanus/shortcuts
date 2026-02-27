@@ -143,9 +143,16 @@ def _act_on_positions(perm: Sequence[int], f) -> Tuple[int, ...]:
     return tuple(perm[finv[p]] for p in range(n))
 
 
-def _directed_annulus_position_symmetries(n: int):
+def _annulus_cyclic_position_symmetries(n: int):
     for k in range(n):
         yield (lambda p, k=k: (p + k) % n)
+
+
+def _annulus_dihedral_position_symmetries(n: int):
+    for k in range(n):
+        yield (lambda p, k=k: (p + k) % n)
+    for k in range(n):
+        yield (lambda p, k=k, n=n: (k - p) % n)
 
 
 def _directed_strip_position_symmetries(n: int):
@@ -154,11 +161,16 @@ def _directed_strip_position_symmetries(n: int):
 
 
 def canonical_perm_under_directed_symmetry(
-    perm: Sequence[int], *, surface: str, n: int
+    perm: Sequence[int], *, surface: str, n: int, directed_interior: bool = True
 ) -> Tuple[int, ...]:
     perm = tuple(perm)
     if surface == "annulus":
-        syms = _directed_annulus_position_symmetries(n)
+        # If interior edges are directed, only cyclic symmetries preserve the
+        # left/right direction structure. Otherwise use full dihedral symmetry.
+        if directed_interior:
+            syms = _annulus_cyclic_position_symmetries(n)
+        else:
+            syms = _annulus_dihedral_position_symmetries(n)
     elif surface == "strip":
         syms = _directed_strip_position_symmetries(n)
     else:
@@ -172,10 +184,14 @@ def canonical_perm_under_directed_symmetry(
     return best  # type: ignore[return-value]
 
 
-def unique_perms_under_directed_symmetry(n: int, surface: str) -> Iterable[Tuple[int, ...]]:
+def unique_perms_under_directed_symmetry(
+    n: int, surface: str, *, directed_interior: bool = True
+) -> Iterable[Tuple[int, ...]]:
     seen = set()
     for perm in permutations(range(n)):
-        key = canonical_perm_under_directed_symmetry(perm, surface=surface, n=n)
+        key = canonical_perm_under_directed_symmetry(
+            perm, surface=surface, n=n, directed_interior=directed_interior
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -197,7 +213,9 @@ def directed_surfaces_from_signature(
     n = len(sig)
 
     if unique:
-        perms = unique_perms_under_directed_symmetry(n, surface=surface)
+        perms = unique_perms_under_directed_symmetry(
+            n, surface=surface, directed_interior=directed_interior
+        )
     else:
         perms = permutations(range(n))
 

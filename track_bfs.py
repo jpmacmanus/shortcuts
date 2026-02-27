@@ -539,11 +539,13 @@ def _candidate_or_dx_shortcut(
     dominant_dir_only: bool = False,
     cover_marked_edges: bool = False,
     require_nontrivial: bool = False,
+    require_dx_sign_for_simple: bool = True,
     debug: bool,
     debug_counts: Optional[dict] = None,
     progress: bool = False,
     progress_interval: int = 200,
     progress_hook=None,
+    stream_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
     trace_color: str = "",
@@ -612,6 +614,27 @@ def _candidate_or_dx_shortcut(
                 continue
             seen.add(key)
 
+            if stream_hook is not None:
+                sq_i, bp = st.cursor
+                stream_hook(
+                    {
+                        "type": "step",
+                        "start_idx": start_idx,
+                        "starts_total": len(starts),
+                        "expanded": expanded,
+                        "max_nodes": max_nodes,
+                        "queue": len(q),
+                        "seen": len(seen),
+                        "generated": generated,
+                        "cursor": f"{bp.side.name.lower()}@{sq_i}",
+                        "dy": st.dy,
+                        "dx": st.dx_linear_form(pretty=True),
+                        "turns": st.turn_count,
+                        "or_pairs": st.or_pair_count,
+                        "render": st.render(),
+                    }
+                )
+
             trace_active = trace_steps and (trace_max_steps is None or expanded <= trace_max_steps)
             if trace_active:
                 print(f"{trace_color}Step {expanded} (max {max_nodes}):{trace_reset}")
@@ -626,22 +649,54 @@ def _candidate_or_dx_shortcut(
             pat = Pattern(surface=st.surface, diagrams=st.diagrams)
             if pat.validate() and _has_any_chord(st) and st.is_closed():
                 ok = True
+                reasons: List[str] = []
                 if require_even_turning:
-                    ok = ok and (st.turn_count % 2 == 0)
+                    if st.turn_count % 2 != 0:
+                        ok = False
+                        reasons.append("turn_count is odd")
                 if require_even_or_pairs:
-                    ok = ok and (st.or_pair_count % 2 == 0)
+                    if st.or_pair_count % 2 != 0:
+                        ok = False
+                        reasons.append("or_pair_count is odd")
                 if require_dy_nonzero:
-                    ok = ok and (st.dy != 0)
+                    if st.dy == 0:
+                        ok = False
+                        reasons.append("dy is zero")
                 if reject_all_interior_used:
-                    ok = ok and (not _uses_all_interior_edges(st))
+                    if _uses_all_interior_edges(st):
+                        ok = False
+                        reasons.append("uses all interior edges")
                 if require_all_marked_used and not cover_marked_edges:
-                    ok = ok and _uses_all_marked_edges(st)
+                    if not _uses_all_marked_edges(st):
+                        ok = False
+                        reasons.append("not all marked edges are used")
                 if longcut_mode:
-                    ok = ok and _uses_all_interior_edges(st)
-                    ok = ok and _has_interior_edge_multiple_uses(st)
+                    if not _uses_all_interior_edges(st):
+                        ok = False
+                        reasons.append("longcut: not all interior edges used")
+                    if not _has_interior_edge_multiple_uses(st):
+                        ok = False
+                        reasons.append("longcut: no interior edge has multiple uses")
                 if ok:
                     found.append(st)
-                    if _dx_all_pos_or_all_neg(st) and not cover_marked_edges and not require_nontrivial:
+                    immediate_ok = (
+                        (not require_dx_sign_for_simple or _dx_all_pos_or_all_neg(st))
+                        and not cover_marked_edges
+                        and not require_nontrivial
+                    )
+                    if immediate_ok:
+                        if stream_hook is not None:
+                            stream_hook(
+                                {
+                                    "type": "closed_accepted",
+                                    "expanded": expanded,
+                                    "dy": st.dy,
+                                    "dx": st.dx_linear_form(pretty=True),
+                                    "turns": st.turn_count,
+                                    "or_pairs": st.or_pair_count,
+                                    "render": st.render(),
+                                }
+                            )
                         if progress and progress_hook is None:
                             sys.stdout.write("\n")
                             sys.stdout.flush()
@@ -671,6 +726,31 @@ def _candidate_or_dx_shortcut(
                                 print(f"{color}{st_path.render()}{trace_reset}")
                                 print()
                         return st, found
+                    else:
+                        extra_reasons: List[str] = []
+                        if cover_marked_edges:
+                            extra_reasons.append("collecting candidates for marked-edge cover")
+                        if require_nontrivial and not _nontrivial_simple_ok(st):
+                            extra_reasons.append("nontrivial-simple condition failed (need dy!=0 and even turns)")
+                        if (
+                            not require_nontrivial
+                            and require_dx_sign_for_simple
+                            and not _dx_all_pos_or_all_neg(st)
+                        ):
+                            extra_reasons.append("dx coefficients are not all same sign")
+                        if stream_hook is not None:
+                            stream_hook(
+                                {
+                                    "type": "closed_rejected",
+                                    "expanded": expanded,
+                                    "dy": st.dy,
+                                    "dx": st.dx_linear_form(pretty=True),
+                                    "turns": st.turn_count,
+                                    "or_pairs": st.or_pair_count,
+                                    "reasons": extra_reasons or ["candidate accepted but deferred"],
+                                    "render": st.render(),
+                                }
+                            )
                     if debug:
                         print(f"Candidate found. Total: {len(found)}")
                     if len(found) >= max_candidates:
@@ -678,6 +758,20 @@ def _candidate_or_dx_shortcut(
                             sys.stdout.write("\n")
                             sys.stdout.flush()
                         return None, found
+                else:
+                    if stream_hook is not None:
+                        stream_hook(
+                            {
+                                "type": "closed_rejected",
+                                "expanded": expanded,
+                                "dy": st.dy,
+                                "dx": st.dx_linear_form(pretty=True),
+                                "turns": st.turn_count,
+                                "or_pairs": st.or_pair_count,
+                                "reasons": reasons or ["failed acceptance constraints"],
+                                "render": st.render(),
+                            }
+                        )
 
             moves = st.moves(
                 multiple_interior_edge_crossings=multiple_interior_edge_crossings,
@@ -1050,6 +1144,7 @@ def search_shortcut_or_complete_set(
     progress: bool = False,
     progress_interval: int = 200,
     progress_hook=None,
+    stream_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
     trace_accepted: bool = False,
@@ -1061,6 +1156,7 @@ def search_shortcut_or_complete_set(
     Generic search with configurable constraints and optional completeness check.
     """
     allow_complete = allow_complete_set or require_nontrivial
+    require_dx_sign_for_simple = allow_complete_set and not require_nontrivial
     shortcut, candidates = _candidate_or_dx_shortcut(
         surface,
         max_nodes=max_nodes,
@@ -1076,10 +1172,12 @@ def search_shortcut_or_complete_set(
         dominant_dir_only=dominant_dir_only,
         cover_marked_edges=require_all_marked_used,
         require_nontrivial=require_nontrivial,
+        require_dx_sign_for_simple=require_dx_sign_for_simple,
         debug=debug,
         progress=progress,
         progress_interval=progress_interval,
         progress_hook=progress_hook,
+        stream_hook=stream_hook,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
         trace_accepted=trace_accepted,
@@ -1089,8 +1187,10 @@ def search_shortcut_or_complete_set(
     )
     if require_nontrivial:
         simple_candidates = [st for st in candidates if _nontrivial_simple_ok(st)]
-    else:
+    elif require_dx_sign_for_simple:
         simple_candidates = [st for st in candidates if _dx_all_pos_or_all_neg(st)]
+    else:
+        simple_candidates = list(candidates)
 
     if not require_all_marked_used:
         if simple_candidates:
@@ -1192,6 +1292,7 @@ def search_shortcut_or_complete_set_with_candidates(
     progress: bool = False,
     progress_interval: int = 200,
     progress_hook=None,
+    stream_hook=None,
     trace_steps: bool = False,
     trace_max_steps: int | None = None,
     trace_accepted: bool = False,
@@ -1203,6 +1304,7 @@ def search_shortcut_or_complete_set_with_candidates(
     Generic search with candidates returned for diagnostics.
     """
     allow_complete = allow_complete_set or require_nontrivial
+    require_dx_sign_for_simple = allow_complete_set and not require_nontrivial
     shortcut, candidates = _candidate_or_dx_shortcut(
         surface,
         max_nodes=max_nodes,
@@ -1218,11 +1320,13 @@ def search_shortcut_or_complete_set_with_candidates(
         dominant_dir_only=dominant_dir_only,
         cover_marked_edges=require_all_marked_used,
         require_nontrivial=require_nontrivial,
+        require_dx_sign_for_simple=require_dx_sign_for_simple,
         debug=debug,
         debug_counts=debug_counts,
         progress=progress,
         progress_interval=progress_interval,
         progress_hook=progress_hook,
+        stream_hook=stream_hook,
         trace_steps=trace_steps,
         trace_max_steps=trace_max_steps,
         trace_accepted=trace_accepted,
@@ -1232,8 +1336,10 @@ def search_shortcut_or_complete_set_with_candidates(
     )
     if require_nontrivial:
         simple_candidates = [st for st in candidates if _nontrivial_simple_ok(st)]
-    else:
+    elif require_dx_sign_for_simple:
         simple_candidates = [st for st in candidates if _dx_all_pos_or_all_neg(st)]
+    else:
+        simple_candidates = list(candidates)
 
     if not require_all_marked_used:
         if simple_candidates:

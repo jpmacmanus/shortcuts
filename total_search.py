@@ -41,16 +41,16 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-N = 8                 # length of Klein signatures to enumerate
+N = 6                 # length of Klein signatures to enumerate
 SURFACE = "annulus"   # "annulus" or "strip"
 
 # Directed edge modes (can be enabled independently).
-DIRECTED_MARKED = True    # vertical directions on marked TOP/BOTTOM edges
-DIRECTED_INTERIOR = True  # horizontal directions on interior edges (annulus only)
+DIRECTED_MARKED = False    # vertical directions on marked TOP/BOTTOM edges
+DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus only)
 
 # Generation / symmetry controls
 UNIQUE = True               # skips surfaces which differ by a symmetry.
-EXCLUDE_ADJACENT_I = True  # skip cases with trivial solutions due to adjacent I squares.
+EXCLUDE_ADJACENT_I = False  # skip cases with trivial solutions due to adjacent I squares.
 PREFIX_PRUNING = False       # start search on smaller prefix cases and build up to desired case.
 START_PREFIX_LENGTH = 1     # only used when PREFIX_PRUNING=True
 INFIX_PRUNING = True        # skip signatures containing a solved contiguous subword.
@@ -59,13 +59,13 @@ INFIX_PRUNING = True        # skip signatures containing a solved contiguous sub
 REQUIRE_DY_NONZERO = False
 REQUIRE_DX_INFEASIBLE = False
 REQUIRE_EVEN_TURNING = False
-REQUIRE_EVEN_OR_PAIRS = True
-DOMINANT_DIR_ONLY = False
-LIMIT_INTERIOR_CROSSINGS = True
-REJECT_ALL_INTERIOR_USED = True
-LONGCUT_MODE = False
+REQUIRE_EVEN_OR_PAIRS = False
+DOMINANT_DIR_ONLY = True
+LIMIT_INTERIOR_CROSSINGS = False
+REJECT_ALL_INTERIOR_USED = False
+LONGCUT_MODE = True
 REQUIRE_ALL_MARKED_USED = False
-REQUIRE_NONTRIVIAL = True
+REQUIRE_NONTRIVIAL = False
 
 # BFS bounds and minimization parameters
 MAX_NODES = 5000
@@ -80,7 +80,7 @@ REFRESH_INTERVAL = 0.2
 SHOW_UNSOLVED_FINAL = True
 
 # Optional markdown report
-WRITE_MARKDOWN_REPORT = False
+WRITE_MARKDOWN_REPORT = True
 REPORT_DIR = "reports"
 REPORT_PATH = ""  # Empty => auto name inside REPORT_DIR.
 
@@ -149,13 +149,22 @@ def _build_surface(sig: List[KleinElt], perm: Sequence[int]):
 
 def _unique_perms(m: int) -> Iterable[Tuple[int, ...]]:
     if DIRECTED_MARKED or DIRECTED_INTERIOR:
-        return unique_perms_under_directed_symmetry(m, surface=SURFACE)
+        return unique_perms_under_directed_symmetry(
+            m,
+            surface=SURFACE,
+            directed_interior=DIRECTED_INTERIOR,
+        )
     return unique_perms_under_symmetry(m, surface=SURFACE)
 
 
 def _canonical_perm(perm: Tuple[int, ...], *, n: int) -> Tuple[int, ...]:
     if DIRECTED_MARKED or DIRECTED_INTERIOR:
-        return canonical_perm_under_directed_symmetry(perm, surface=SURFACE, n=n)
+        return canonical_perm_under_directed_symmetry(
+            perm,
+            surface=SURFACE,
+            n=n,
+            directed_interior=DIRECTED_INTERIOR,
+        )
     return canonical_perm_under_symmetry(perm, surface=SURFACE, n=n)
 
 
