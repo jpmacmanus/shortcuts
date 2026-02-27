@@ -51,8 +51,8 @@ DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus on
 # Generation / symmetry controls
 UNIQUE = True               # skips surfaces which differ by a symmetry.
 EXCLUDE_ADJACENT_I = False  # skip cases with trivial solutions due to adjacent I squares.
-PREFIX_PRUNING = False       # start search on smaller prefix cases and build up to desired case.
-START_PREFIX_LENGTH = 1     # only used when PREFIX_PRUNING=True
+PREFIX_PRUNING = True       # start search on smaller prefix cases and build up to desired case.
+START_PREFIX_LENGTH = 2     # only used when PREFIX_PRUNING=True
 INFIX_PRUNING = True        # skip signatures containing a solved contiguous subword.
 
 # Acceptance constraints (same as exhaustive_search)
@@ -291,16 +291,18 @@ def _run_signature(
 
     # Prefix pruning
     n = len(sig_full)
-    if START_PREFIX_LENGTH < 1 or START_PREFIX_LENGTH > n:
-        raise ValueError("START_PREFIX_LENGTH must satisfy 1 <= start <= len(signature)")
+    # In total-search we may intentionally run shorter signatures first (e.g. infix
+    # pruning). Clamp the per-signature start so prefix mode still works for
+    # signatures shorter than the global START_PREFIX_LENGTH.
+    start_prefix = max(1, min(START_PREFIX_LENGTH, n))
 
-    candidates = list(_unique_perms(START_PREFIX_LENGTH))
+    candidates = list(_unique_perms(start_prefix))
     basket: set[Tuple[int, ...]] = set()
 
-    for m in range(START_PREFIX_LENGTH, n + 1):
+    for m in range(start_prefix, n + 1):
         sig_prefix = sig_full[:m]
         is_final = (m == n)
-        if m == START_PREFIX_LENGTH:
+        if m == start_prefix:
             stage_candidates = candidates
         else:
             new_label = m - 1

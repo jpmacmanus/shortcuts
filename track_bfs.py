@@ -221,7 +221,7 @@ def _dx_all_pos_or_all_neg(st: TrackState) -> bool:
 
 
 def _uses_all_interior_edges(st: TrackState) -> bool:
-    # Detect whether every interior edge has been used by some chord endpoint.
+    # Detect whether every interior edge has at least one interior crossing.
     all_interior: set[int] = set()
     for e in st.surface.all_edge_refs():
         if not st.surface.is_interior_edge(e):
@@ -230,16 +230,8 @@ def _uses_all_interior_edges(st: TrackState) -> bool:
         all_interior.add(id(edge_obj))
     if not all_interior:
         return False
-
-    used_interior: set[int] = set()
-    for i in range(st.surface.N):
-        diagram = st.diagrams[i]
-        for ch in diagram.chords:
-            for bp in (ch.a, ch.b):
-                e = EdgeRef(bp.side, i)
-                if st.surface.is_interior_edge(e):
-                    edge_obj = st.surface.square(i).edge(bp.side)
-                    used_interior.add(id(edge_obj))
+    by_edge = _interior_crossings_by_edge(st)
+    used_interior = {eid for eid, crossings in by_edge.items() if crossings}
     return used_interior.issuperset(all_interior)
 
 
@@ -330,9 +322,21 @@ def _minimal_cover(
 
 def _has_interior_edge_multiple_uses(st: TrackState) -> bool:
     """
-    Return True if some interior edge is used more than once by chord endpoints.
+    Return True if some interior edge is crossed more than once.
     """
-    counts: Dict[int, int] = {}
+    by_edge = _interior_crossings_by_edge(st)
+    return any(len(crossings) > 1 for crossings in by_edge.values())
+
+
+def _interior_crossings_by_edge(st: TrackState) -> Dict[int, Set[Tuple[int, ...]]]:
+    """
+    Group interior crossings by interior edge object id.
+
+    A single geometric crossing contributes a pair of matched ports on the two
+    identified sides of an interior edge; we collapse that pair to one key so
+    it is counted once (important for annulus N=1 identified left/right edge).
+    """
+    counts: Dict[int, Set[Tuple[int, ...]]] = {}
     for i in range(st.surface.N):
         diagram = st.diagrams[i]
         for ch in diagram.chords:
@@ -340,8 +344,18 @@ def _has_interior_edge_multiple_uses(st: TrackState) -> bool:
                 e = EdgeRef(bp.side, i)
                 if st.surface.is_interior_edge(e):
                     edge_obj = st.surface.square(i).edge(bp.side)
-                    counts[id(edge_obj)] = counts.get(id(edge_obj), 0) + 1
-    return any(v > 1 for v in counts.values())
+                    edge_id = id(edge_obj)
+                    pair = st.surface.paired_port(e, bp.port)
+                    if pair is None:
+                        crossing_key = (id(bp.port),)
+                    else:
+                        if isinstance(pair, tuple):
+                            p2 = pair[1]
+                        else:
+                            p2 = pair
+                        crossing_key = tuple(sorted((id(bp.port), id(p2))))
+                    counts.setdefault(edge_id, set()).add(crossing_key)
+    return counts
 
 
 def _simple_constraints_ok(st: TrackState) -> bool:
