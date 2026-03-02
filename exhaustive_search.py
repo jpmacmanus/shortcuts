@@ -36,8 +36,8 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-SIGNATURE = "I H I"  # Klein signature to be searched over.
-SURFACE = "strip"        # "annulus" or "strip"
+SIGNATURE = "I H I H I H I H I"  # Klein signature to be searched over.
+SURFACE = "annulus"        # "annulus" or "strip"
 # Directed edge modes (can be enabled independently).
 DIRECTED_MARKED = False    # vertical directions on marked TOP/BOTTOM edges
 DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus only)
@@ -46,22 +46,22 @@ DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus on
 UNIQUE = True               # skips surfaces which differ by a symmetry.
 EXCLUDE_ADJACENT_I = False   # skip cases which have trivial solutions due to adjacent I squares.
                             # ignored when any directed mode is enabled.
-PREFIX_PRUNING = False       # start search on smaller prefix cases and build up to desired case.
+PREFIX_PRUNING = True       # start search on smaller prefix cases and build up to desired case.
 START_PREFIX_LENGTH = 2     # only used when PREFIX_PRUNING=True
 
 # Acceptance constraints
-REQUIRE_DY_NONZERO = True        # only accept tracks with dy != 0
+REQUIRE_DY_NONZERO = False        # only accept tracks with dy != 0
 REQUIRE_DX_INFEASIBLE = False     # require dx != 0:
                                  #      when raised, will sometimes return multiple candidates 
                                  #      to account for extra unmarked squares.
                                  #      at least one of these candidates is guaranteed to work for 
                                  #      any given assignment of weights.
-REQUIRE_EVEN_TURNING = True      # only accept tracks with an even number of turns.
+REQUIRE_EVEN_TURNING = False      # only accept tracks with an even number of turns.
 REQUIRE_EVEN_OR_PAIRS = False     # only accept orientable tracks (no Mobius band neighbourhood)
-DOMINANT_DIR_ONLY = False        # only move along dominant x-direction (free first move)
+DOMINANT_DIR_ONLY = True        # only move along dominant x-direction (free first move)
 LIMIT_INTERIOR_CROSSINGS = False  # when True, cap interior crossings to one per edge
 REJECT_ALL_INTERIOR_USED = False  # reject solutions that use every interior edge
-LONGCUT_MODE = False             # require all interior edges used, and some used > once
+LONGCUT_MODE = True             # require all interior edges used, and some used > once
 REQUIRE_ALL_MARKED_USED = False  # require every marked edge to be used at least once
 REQUIRE_NONTRIVIAL = False       # require (dy!=0 & even turns) OR (dx infeasible & even OR pairs)
 

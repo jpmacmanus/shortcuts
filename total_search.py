@@ -41,11 +41,11 @@ from track_bfs import (
 # ----------------------------
 
 # Search input
-N = 6                 # length of Klein signatures to enumerate
-SURFACE = "annulus"   # "annulus" or "strip"
+N = 3                 # length of Klein signatures to enumerate
+SURFACE = "strip"   # "annulus" or "strip"
 
 # Directed edge modes (can be enabled independently).
-DIRECTED_MARKED = False    # vertical directions on marked TOP/BOTTOM edges
+DIRECTED_MARKED = True    # vertical directions on marked TOP/BOTTOM edges
 DIRECTED_INTERIOR = False  # horizontal directions on interior edges (annulus only)
 
 # Generation / symmetry controls
@@ -60,12 +60,12 @@ REQUIRE_DY_NONZERO = False
 REQUIRE_DX_INFEASIBLE = False
 REQUIRE_EVEN_TURNING = False
 REQUIRE_EVEN_OR_PAIRS = False
-DOMINANT_DIR_ONLY = True
+DOMINANT_DIR_ONLY = False
 LIMIT_INTERIOR_CROSSINGS = False
 REJECT_ALL_INTERIOR_USED = False
-LONGCUT_MODE = True
-REQUIRE_ALL_MARKED_USED = False
-REQUIRE_NONTRIVIAL = False
+LONGCUT_MODE = False
+REQUIRE_ALL_MARKED_USED = True
+REQUIRE_NONTRIVIAL = True
 
 # BFS bounds and minimization parameters
 MAX_NODES = 5000
@@ -205,6 +205,7 @@ def _run_signature(
     *,
     surface_hook=None,
     progress_hook=None,
+    prefix_cache: Optional[dict[str, Tuple[Tuple[int, ...], ...]]] = None,
 ) -> Tuple[bool, int, int, int, int, int, Optional[str], List[dict]]:
     """
     Run the search for a single signature.
@@ -295,14 +296,24 @@ def _run_signature(
     # pruning). Clamp the per-signature start so prefix mode still works for
     # signatures shorter than the global START_PREFIX_LENGTH.
     start_prefix = max(1, min(START_PREFIX_LENGTH, n))
+    sig_word = "".join(s.name for s in sig_full)
 
     candidates = list(_unique_perms(start_prefix))
     basket: set[Tuple[int, ...]] = set()
+    loop_start = start_prefix
+    if prefix_cache is not None:
+        for k in range(n - 1, start_prefix - 1, -1):
+            cached = prefix_cache.get(sig_word[:k])
+            if cached is None:
+                continue
+            basket = set(cached)
+            loop_start = k + 1
+            break
 
-    for m in range(start_prefix, n + 1):
+    for m in range(loop_start, n + 1):
         sig_prefix = sig_full[:m]
         is_final = (m == n)
-        if m == start_prefix:
+        if m == start_prefix and loop_start == start_prefix:
             stage_candidates = candidates
         else:
             new_label = m - 1
@@ -379,6 +390,8 @@ def _run_signature(
             else:
                 if result is None:
                     basket.add(perm)
+        if not is_final and prefix_cache is not None:
+            prefix_cache[sig_word[:m]] = tuple(sorted(basket))
 
     solved = (unsolved_total == 0) and (simple_total + complete_total > 0)
     return (
@@ -671,6 +684,7 @@ def main() -> None:
     unsolved_final_cases = 0
     considered_rows: List[dict] = []
     solution_rows: List[dict] = []
+    prefix_cache: Optional[dict[str, Tuple[Tuple[int, ...], ...]]] = {} if PREFIX_PRUNING else None
 
     def _surface_hook(surface, surface_idx: int, surface_total: int) -> None:
         nonlocal current_surface_text, current_surface_idx, current_surface_total
@@ -804,6 +818,7 @@ def main() -> None:
                 sig,
                 surface_hook=_surface_hook,
                 progress_hook=_progress_hook,
+                prefix_cache=prefix_cache,
             )
             total_cases += _total_cases
             case_simple += simple

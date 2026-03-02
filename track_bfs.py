@@ -66,31 +66,44 @@ def _state_key(st: TrackState) -> Tuple:
 
 
 def _start_edges(surface: MarkedSurface, *, allow_bottom: bool) -> list[EdgeRef]:
-    # Prefer marked TOP edges; optionally include marked BOTTOM edges.
+    # Prefer one representative start edge per marked pair.
     starts: list[EdgeRef] = []
+    seen: set[tuple[Side, int]] = set()
     for p in surface.all_pairs():
-        if p.a.side == Side.TOP:
-            starts.append(EdgeRef(p.a.side, p.a.i))
-        if p.b.side == Side.TOP:
-            starts.append(EdgeRef(p.b.side, p.b.i))
-        if allow_bottom:
-            if p.a.side == Side.BOTTOM:
-                starts.append(EdgeRef(p.a.side, p.a.i))
-            if p.b.side == Side.BOTTOM:
-                starts.append(EdgeRef(p.b.side, p.b.i))
+        ea = EdgeRef(p.a.side, p.a.i)
+        eb = EdgeRef(p.b.side, p.b.i)
+
+        pair_candidates: list[EdgeRef] = []
+        for e in (ea, eb):
+            if e.side == Side.TOP or (allow_bottom and e.side == Side.BOTTOM):
+                pair_candidates.append(e)
+        if not pair_candidates:
+            continue
+
+        # Directed marked mode: prefer the IN edge as canonical representative.
+        preferred: Optional[EdgeRef] = None
+        if hasattr(surface, "edge_direction"):
+            in_edges = [e for e in pair_candidates if _edge_dir_value(surface, e) == "in"]
+            if in_edges:
+                preferred = in_edges[0]
+
+        ordered = [preferred] + [e for e in pair_candidates if e != preferred] if preferred else pair_candidates
+        chosen: Optional[EdgeRef] = None
+        for e in ordered:
+            # Start state requires entering the chosen edge.
+            if _dir_allows_in(_edge_dir_value(surface, e)):
+                chosen = e
+                break
+        if chosen is None:
+            continue
+        key = (chosen.side, chosen.i)
+        if key in seen:
+            continue
+        seen.add(key)
+        starts.append(chosen)
 
     if starts:
-        seen: set[tuple[Side, int]] = set()
-        unique: list[EdgeRef] = []
-        for e in starts:
-            if not _dir_allows_in(_edge_dir_value(surface, e)):
-                continue
-            key = (e.side, e.i)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(e)
-        return unique
+        return starts
 
     # Fallback: any interior IN edge.
     for e in surface.all_edge_refs():
